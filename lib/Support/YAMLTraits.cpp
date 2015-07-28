@@ -56,13 +56,12 @@ Input::Input(StringRef InputContent,
   DocIterator = Strm->begin();
 }
 
-Input::Input(MemoryBuffer& Input,
+Input::Input(MemoryBufferRef Input,
              void *Ctxt,
              SourceMgr::DiagHandlerTy DiagHandler,
              void *DiagHandlerCtxt)
   : IO(Ctxt),
-    Strm(new Stream(
-      MemoryBufferRef(Input.getBuffer(), Input.getBufferIdentifier()), SrcMgr)),
+    Strm(new Stream(Input, SrcMgr)),
     CurrentNode(nullptr) {
   if (DiagHandler)
     SrcMgr.setDiagHandler(DiagHandler, DiagHandlerCtxt);

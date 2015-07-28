@@ -945,7 +945,7 @@ public:
         void *Ctxt = nullptr,
         SourceMgr::DiagHandlerTy DiagHandler = nullptr,
         void *DiagHandlerCtxt = nullptr);
-  Input(MemoryBuffer& Input,
+  Input(MemoryBufferRef Input,
         void *Ctxt = nullptr,
         SourceMgr::DiagHandlerTy DiagHandler = nullptr,
         void *DiagHandlerCtxt = nullptr);
