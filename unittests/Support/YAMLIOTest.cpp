@@ -242,7 +242,7 @@ static void testErrorFilename(const llvm::SMDiagnostic &Error, void *) {
 
 TEST(YAMLIO, TestGivenFilename) {
   auto Buffer = llvm::MemoryBuffer::getMemBuffer("{ x: 42 }", "foo.yaml");
-  Input yin(Buffer->getMemBufferRef(), nullptr, testErrorFilename);
+  Input yin(*Buffer, nullptr, testErrorFilename);
   FooBar Value;
   yin >> Value;
 
