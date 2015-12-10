@@ -16,6 +16,7 @@
 #include "R600ISelLowering.h"
 #include "R600InstrInfo.h"
 #include "R600MachineScheduler.h"
+#include "SIFrameLowering.h"
 #include "SIISelLowering.h"
 #include "SIInstrInfo.h"
 #include "SIMachineFunctionInfo.h"
@@ -69,23 +70,34 @@ AMDGPUSubtarget::AMDGPUSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
       FP64Denormals(false), FP32Denormals(false), FastFMAF32(false),
       CaymanISA(false), FlatAddressSpace(false), EnableIRStructurizer(true),
       EnablePromoteAlloca(false), EnableIfCvt(true), EnableLoadStoreOpt(false),
+      EnableUnsafeDSOffsetFolding(false),
       WavefrontSize(0), CFALUBug(false), LocalMemorySize(0),
       EnableVGPRSpilling(false), SGPRInitBug(false), IsGCN(false),
       GCN1Encoding(false), GCN3Encoding(false), CIInsts(false), LDSBankCount(0),
-      IsaVersion(ISAVersion0_0_0),
-      FrameLowering(TargetFrameLowering::StackGrowsUp,
-                    64 * 16, // Maximum stack alignment (long16)
-                    0),
+      IsaVersion(ISAVersion0_0_0), EnableHugeScratchBuffer(false),
+      FrameLowering(nullptr),
       InstrItins(getInstrItineraryForCPU(GPU)), TargetTriple(TT) {
 
   initializeSubtargetDependencies(TT, GPU, FS);
 
+  const unsigned MaxStackAlign = 64 * 16; // Maximum stack alignment (long16)
+
   if (getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS) {
     InstrInfo.reset(new R600InstrInfo(*this));
     TLInfo.reset(new R600TargetLowering(TM, *this));
+
+    // FIXME: Should have R600 specific FrameLowering
+    FrameLowering.reset(new AMDGPUFrameLowering(
+                          TargetFrameLowering::StackGrowsUp,
+                          MaxStackAlign,
+                          0));
   } else {
     InstrInfo.reset(new SIInstrInfo(*this));
     TLInfo.reset(new SITargetLowering(TM, *this));
+    FrameLowering.reset(new SIFrameLowering(
+                          TargetFrameLowering::StackGrowsUp,
+                          MaxStackAlign,
+                          0));
   }
 }
 

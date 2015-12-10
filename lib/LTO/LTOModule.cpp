@@ -91,6 +91,15 @@ bool LTOModule::isBitcodeForTarget(MemoryBuffer *Buffer,
   return StringRef(Triple).startswith(TriplePrefix);
 }
 
+std::string LTOModule::getProducerString(MemoryBuffer *Buffer) {
+  ErrorOr<MemoryBufferRef> BCOrErr =
+      IRObjectFile::findBitcodeInMemBuffer(Buffer->getMemBufferRef());
+  if (!BCOrErr)
+    return "";
+  LLVMContext Context;
+  return getBitcodeProducerString(*BCOrErr, Context);
+}
+
 LTOModule *LTOModule::createFromFile(const char *path, TargetOptions options,
                                      std::string &errMsg) {
   ErrorOr<std::unique_ptr<MemoryBuffer>> BufferOrErr =
@@ -232,7 +241,7 @@ LTOModule *LTOModule::makeLTOModule(MemoryBufferRef Buffer,
 
   TargetMachine *target = march->createTargetMachine(TripleStr, CPU, FeatureStr,
                                                      options);
-  M->setDataLayout(*target->getDataLayout());
+  M->setDataLayout(target->createDataLayout());
 
   std::unique_ptr<object::IRObjectFile> IRObj(
       new object::IRObjectFile(Buffer, std::move(M)));
@@ -472,6 +481,9 @@ void LTOModule::addDefinedSymbol(const char *Name, const GlobalValue *def,
 
   if (def->hasComdat())
     attr |= LTO_SYMBOL_COMDAT;
+
+  if (isa<GlobalAlias>(def))
+    attr |= LTO_SYMBOL_ALIAS;
 
   auto Iter = _defines.insert(Name).first;
 

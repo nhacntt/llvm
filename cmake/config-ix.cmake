@@ -67,7 +67,6 @@ check_include_file(sys/resource.h HAVE_SYS_RESOURCE_H)
 check_include_file(sys/stat.h HAVE_SYS_STAT_H)
 check_include_file(sys/time.h HAVE_SYS_TIME_H)
 check_include_file(sys/uio.h HAVE_SYS_UIO_H)
-check_include_file(sys/wait.h HAVE_SYS_WAIT_H)
 check_include_file(termios.h HAVE_TERMIOS_H)
 check_include_file(unistd.h HAVE_UNISTD_H)
 check_include_file(utime.h HAVE_UTIME_H)
@@ -106,6 +105,12 @@ if( NOT PURE_WINDOWS )
   endif()
   check_library_exists(dl dlopen "" HAVE_LIBDL)
   check_library_exists(rt clock_gettime "" HAVE_LIBRT)
+endif()
+
+# Don't look for these libraries on Windows. Also don't look for them if we're
+# using MSan, since uninstrmented third party code may call MSan interceptors
+# like strlen, leading to false positives.
+if( NOT PURE_WINDOWS AND NOT LLVM_USE_SANITIZER MATCHES "Memory.*")
   if (LLVM_ENABLE_ZLIB)
     check_library_exists(z compress2 "" HAVE_LIBZ)
   else()
@@ -397,12 +402,10 @@ else ()
 endif ()
 
 if( MINGW )
-  set(HAVE_LIBIMAGEHLP 1)
   set(HAVE_LIBPSAPI 1)
   set(HAVE_LIBSHELL32 1)
   # TODO: Check existence of libraries.
   #   include(CheckLibraryExists)
-  #   CHECK_LIBRARY_EXISTS(imagehlp ??? . HAVE_LIBIMAGEHLP)
 endif( MINGW )
 
 if (NOT HAVE_STRTOLL)
@@ -493,7 +496,7 @@ if (LLVM_ENABLE_DOXYGEN)
 
     option(LLVM_DOXYGEN_EXTERNAL_SEARCH "Enable doxygen external search." OFF)
     if (LLVM_DOXYGEN_EXTERNAL_SEARCH)
-      set(LLVM_DOXYGEN_SEARCHENGINE_URL "" CACHE STRING "URL to use for external searhc.")
+      set(LLVM_DOXYGEN_SEARCHENGINE_URL "" CACHE STRING "URL to use for external search.")
       set(LLVM_DOXYGEN_SEARCH_MAPPINGS "" CACHE STRING "Doxygen Search Mappings")
     endif()
   endif()

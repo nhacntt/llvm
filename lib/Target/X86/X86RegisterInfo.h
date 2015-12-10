@@ -96,7 +96,11 @@ public:
   getCalleeSavedRegs(const MachineFunction* MF) const override;
   const uint32_t *getCallPreservedMask(const MachineFunction &MF,
                                        CallingConv::ID) const override;
-  const uint32_t *getNoPreservedMask() const;
+  const uint32_t *getNoPreservedMask() const override;
+
+  // Calls involved in thread-local variable lookup save more registers than
+  // normal calls, so they need a different mask to represent this.
+  const uint32_t *getDarwinTLSCallPreservedMask() const;
 
   /// getReservedRegs - Returns a bitset indexed by physical register number
   /// indicating if a register is a special register that has particular uses and
@@ -108,9 +112,7 @@ public:
 
   bool hasBasePointer(const MachineFunction &MF) const;
 
-  bool canRealignStack(const MachineFunction &MF) const;
-
-  bool needsStackRealignment(const MachineFunction &MF) const override;
+  bool canRealignStack(const MachineFunction &MF) const override;
 
   bool hasReservedSpillSlot(const MachineFunction &MF, unsigned Reg,
                             int &FrameIdx) const override;
