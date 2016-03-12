@@ -207,6 +207,9 @@ def main(builtinParameters = {}):
     group.add_option("", "--no-execute", dest="noExecute",
                      help="Don't execute any tests (assume PASS)",
                      action="store_true", default=False)
+    group.add_option("", "--xunit-xml-output", dest="xunit_output_file",
+                      help=("Write XUnit-compatible XML test reports to the"
+                            " specified file"), default=None)
     parser.add_option_group(group)
 
     group = OptionGroup(parser, "Test Selection")
@@ -402,6 +405,36 @@ def main(builtinParameters = {}):
         N = len(byCode.get(code,[]))
         if N:
             print '  %s: %d' % (name,N)
+
+    if opts.xunit_output_file:
+        # Collect the tests, indexed by test suite
+        by_suite = {}
+        for result_test in tests:
+            suite = result_test.suite.config.name
+            if suite not in by_suite:
+                by_suite[suite] = {
+                                   'passes'   : 0,
+                                   'failures' : 0,
+                                   'tests'    : [] }
+            by_suite[suite]['tests'].append(result_test)
+            if result_test.result.isFailure:
+                by_suite[suite]['failures'] += 1
+            else:
+                by_suite[suite]['passes'] += 1
+        xunit_output_file = open(opts.xunit_output_file, "w")
+        xunit_output_file.write("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n")
+        xunit_output_file.write("<testsuites>\n")
+        for suite_name, suite in by_suite.items():
+            xunit_output_file.write("<testsuite name='" + suite_name + "'")
+            xunit_output_file.write(" tests='" + str(suite['passes'] + 
+              suite['failures']) + "'")
+            xunit_output_file.write(" failures='" + str(suite['failures']) + 
+              "'>\n")
+            for result_test in suite['tests']:
+                xunit_output_file.write(result_test.getJUnitXML() + "\n")
+            xunit_output_file.write("</testsuite>\n")
+        xunit_output_file.write("</testsuites>")
+        xunit_output_file.close()
 
     # If we encountered any additional errors, exit abnormally.
     if litConfig.numErrors:
