@@ -91,7 +91,7 @@ class Test:
         xml = "<testcase classname='" + self.suite.name + "." + "/".join(test_path) + "'" + " name='" + test_name + "'"
         xml += " time='%.2f'" % (self.elapsed,)
         if self.result.isFailure:
-          xml += ">\n\t<failure >\n" + escape(self.result.output)
+          xml += ">\n\t<failure >\n" + escape(self.output)
           xml += "\n\t</failure>\n</testcase>"
         else:
           xml += "/>"
