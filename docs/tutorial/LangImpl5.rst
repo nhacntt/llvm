@@ -97,13 +97,13 @@ To represent the new expression we add a new AST node for it:
 
     /// IfExprAST - Expression class for if/then/else.
     class IfExprAST : public ExprAST {
-      std::unique<ExprAST> Cond, Then, Else;
+      std::unique_ptr<ExprAST> Cond, Then, Else;
 
     public:
       IfExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Then,
                 std::unique_ptr<ExprAST> Else)
         : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
-      virtual Value *Codegen();
+      virtual Value *codegen();
     };
 
 The AST node just has pointers to the various subexpressions.
@@ -127,7 +127,7 @@ First we define a new parsing function:
         return nullptr;
 
       if (CurTok != tok_then)
-        return Error("expected then");
+        return LogError("expected then");
       getNextToken();  // eat the then
 
       auto Then = ParseExpression();
@@ -135,7 +135,7 @@ First we define a new parsing function:
         return nullptr;
 
       if (CurTok != tok_else)
-        return Error("expected else");
+        return LogError("expected else");
 
       getNextToken();
 
@@ -154,7 +154,7 @@ Next we hook it up as a primary expression:
     static std::unique_ptr<ExprAST> ParsePrimary() {
       switch (CurTok) {
       default:
-        return Error("unknown token when expecting an expression");
+        return LogError("unknown token when expecting an expression");
       case tok_identifier:
         return ParseIdentifierExpr();
       case tok_number:
@@ -214,7 +214,7 @@ Kaleidoscope looks like this:
 To visualize the control flow graph, you can use a nifty feature of the
 LLVM '`opt <http://llvm.org/cmds/opt.html>`_' tool. If you put this LLVM
 IR into "t.ll" and run "``llvm-as < t.ll | opt -analyze -view-cfg``", `a
-window will pop up <../ProgrammersManual.html#ViewGraph>`_ and you'll
+window will pop up <../ProgrammersManual.html#viewing-graphs-while-debugging-code>`_ and you'll
 see this graph:
 
 .. figure:: LangImpl5-cfg.png
@@ -280,19 +280,19 @@ Okay, enough of the motivation and overview, lets generate code!
 Code Generation for If/Then/Else
 --------------------------------
 
-In order to generate code for this, we implement the ``Codegen`` method
+In order to generate code for this, we implement the ``codegen`` method
 for ``IfExprAST``:
 
 .. code-block:: c++
 
-    Value *IfExprAST::Codegen() {
-      Value *CondV = Cond->Codegen();
+    Value *IfExprAST::codegen() {
+      Value *CondV = Cond->codegen();
       if (!CondV)
         return nullptr;
 
       // Convert condition to a bool by comparing equal to 0.0.
       CondV = Builder.CreateFCmpONE(
-          CondV, ConstantFP::get(getGlobalContext(), APFloat(0.0)), "ifcond");
+          CondV, ConstantFP::get(LLVMContext, APFloat(0.0)), "ifcond");
 
 This code is straightforward and similar to what we saw before. We emit
 the expression for the condition, then compare that value to zero to get
@@ -305,9 +305,9 @@ a truth value as a 1-bit (bool) value.
       // Create blocks for the then and else cases.  Insert the 'then' block at the
       // end of the function.
       BasicBlock *ThenBB =
-          BasicBlock::Create(getGlobalContext(), "then", TheFunction);
-      BasicBlock *ElseBB = BasicBlock::Create(getGlobalContext(), "else");
-      BasicBlock *MergeBB = BasicBlock::Create(getGlobalContext(), "ifcont");
+          BasicBlock::Create(LLVMContext, "then", TheFunction);
+      BasicBlock *ElseBB = BasicBlock::Create(LLVMContext, "else");
+      BasicBlock *MergeBB = BasicBlock::Create(LLVMContext, "ifcont");
 
       Builder.CreateCondBr(CondV, ThenBB, ElseBB);
 
@@ -337,7 +337,7 @@ that LLVM supports forward references.
       // Emit then value.
       Builder.SetInsertPoint(ThenBB);
 
-      Value *ThenV = Then->Codegen();
+      Value *ThenV = Then->codegen();
       if (!ThenV)
         return nullptr;
 
@@ -369,7 +369,7 @@ of the block in the CFG. Why then, are we getting the current block when
 we just set it to ThenBB 5 lines above? The problem is that the "Then"
 expression may actually itself change the block that the Builder is
 emitting into if, for example, it contains a nested "if/then/else"
-expression. Because calling Codegen recursively could arbitrarily change
+expression. Because calling ``codegen()`` recursively could arbitrarily change
 the notion of the current block, we are required to get an up-to-date
 value for code that will set up the Phi node.
 
@@ -379,12 +379,12 @@ value for code that will set up the Phi node.
       TheFunction->getBasicBlockList().push_back(ElseBB);
       Builder.SetInsertPoint(ElseBB);
 
-      Value *ElseV = Else->Codegen();
+      Value *ElseV = Else->codegen();
       if (!ElseV)
         return nullptr;
 
       Builder.CreateBr(MergeBB);
-      // Codegen of 'Else' can change the current block, update ElseBB for the PHI.
+      // codegen of 'Else' can change the current block, update ElseBB for the PHI.
       ElseBB = Builder.GetInsertBlock();
 
 Code generation for the 'else' block is basically identical to codegen
@@ -400,7 +400,7 @@ code:
       TheFunction->getBasicBlockList().push_back(MergeBB);
       Builder.SetInsertPoint(MergeBB);
       PHINode *PN =
-        Builder.CreatePHI(Type::getDoubleTy(getGlobalContext()), 2, "iftmp");
+        Builder.CreatePHI(Type::getDoubleTy(LLVMContext), 2, "iftmp");
 
       PN->addIncoming(ThenV, ThenBB);
       PN->addIncoming(ElseV, ElseBB);
@@ -500,7 +500,7 @@ variable name and the constituent expressions in the node.
                  std::unique_ptr<ExprAST> Body)
         : VarName(VarName), Start(std::move(Start)), End(std::move(End)),
           Step(std::move(Step)), Body(std::move(Body)) {}
-      virtual Value *Codegen();
+      virtual Value *codegen();
     };
 
 Parser Extensions for the 'for' Loop
@@ -518,13 +518,13 @@ value to null in the AST node:
       getNextToken();  // eat the for.
 
       if (CurTok != tok_identifier)
-        return Error("expected identifier after for");
+        return LogError("expected identifier after for");
 
       std::string IdName = IdentifierStr;
       getNextToken();  // eat identifier.
 
       if (CurTok != '=')
-        return Error("expected '=' after for");
+        return LogError("expected '=' after for");
       getNextToken();  // eat '='.
 
 
@@ -532,7 +532,7 @@ value to null in the AST node:
       if (!Start)
         return nullptr;
       if (CurTok != ',')
-        return Error("expected ',' after for start value");
+        return LogError("expected ',' after for start value");
       getNextToken();
 
       auto End = ParseExpression();
@@ -549,7 +549,7 @@ value to null in the AST node:
       }
 
       if (CurTok != tok_in)
-        return Error("expected 'in' after for");
+        return LogError("expected 'in' after for");
       getNextToken();  // eat 'in'.
 
       auto Body = ParseExpression();
@@ -602,14 +602,14 @@ together.
 Code Generation for the 'for' Loop
 ----------------------------------
 
-The first part of Codegen is very simple: we just output the start
+The first part of codegen is very simple: we just output the start
 expression for the loop value:
 
 .. code-block:: c++
 
-    Value *ForExprAST::Codegen() {
+    Value *ForExprAST::codegen() {
       // Emit the start code first, without 'variable' in scope.
-      Value *StartVal = Start->Codegen();
+      Value *StartVal = Start->codegen();
       if (StartVal == 0) return 0;
 
 With this out of the way, the next step is to set up the LLVM basic
@@ -625,7 +625,7 @@ expression).
       Function *TheFunction = Builder.GetInsertBlock()->getParent();
       BasicBlock *PreheaderBB = Builder.GetInsertBlock();
       BasicBlock *LoopBB =
-          BasicBlock::Create(getGlobalContext(), "loop", TheFunction);
+          BasicBlock::Create(LLVMContext, "loop", TheFunction);
 
       // Insert an explicit fall through from the current block to the LoopBB.
       Builder.CreateBr(LoopBB);
@@ -642,7 +642,7 @@ the two blocks.
       Builder.SetInsertPoint(LoopBB);
 
       // Start the PHI node with an entry for Start.
-      PHINode *Variable = Builder.CreatePHI(Type::getDoubleTy(getGlobalContext()),
+      PHINode *Variable = Builder.CreatePHI(Type::getDoubleTy(LLVMContext),
                                             2, VarName.c_str());
       Variable->addIncoming(StartVal, PreheaderBB);
 
@@ -663,7 +663,7 @@ backedge, but we can't set it up yet (because it doesn't exist!).
       // Emit the body of the loop.  This, like any other expr, can change the
       // current BB.  Note that we ignore the value computed by the body, but don't
       // allow an error.
-      if (!Body->Codegen())
+      if (!Body->codegen())
         return nullptr;
 
 Now the code starts to get more interesting. Our 'for' loop introduces a
@@ -688,12 +688,12 @@ table.
       // Emit the step value.
       Value *StepVal = nullptr;
       if (Step) {
-        StepVal = Step->Codegen();
+        StepVal = Step->codegen();
         if (!StepVal)
           return nullptr;
       } else {
         // If not specified, use 1.0.
-        StepVal = ConstantFP::get(getGlobalContext(), APFloat(1.0));
+        StepVal = ConstantFP::get(LLVMContext, APFloat(1.0));
       }
 
       Value *NextVar = Builder.CreateFAdd(Variable, StepVal, "nextvar");
@@ -706,13 +706,13 @@ iteration of the loop.
 .. code-block:: c++
 
       // Compute the end condition.
-      Value *EndCond = End->Codegen();
+      Value *EndCond = End->codegen();
       if (!EndCond)
         return nullptr;
 
       // Convert condition to a bool by comparing equal to 0.0.
       EndCond = Builder.CreateFCmpONE(
-          EndCond, ConstantFP::get(getGlobalContext(), APFloat(0.0)), "loopcond");
+          EndCond, ConstantFP::get(LLVMContext, APFloat(0.0)), "loopcond");
 
 Finally, we evaluate the exit value of the loop, to determine whether
 the loop should exit. This mirrors the condition evaluation for the
@@ -723,7 +723,7 @@ if/then/else statement.
       // Create the "after loop" block and insert it.
       BasicBlock *LoopEndBB = Builder.GetInsertBlock();
       BasicBlock *AfterBB =
-          BasicBlock::Create(getGlobalContext(), "afterloop", TheFunction);
+          BasicBlock::Create(LLVMContext, "afterloop", TheFunction);
 
       // Insert the conditional branch into the end of LoopEndBB.
       Builder.CreateCondBr(EndCond, LoopBB, AfterBB);
@@ -751,7 +751,7 @@ insertion position to it.
         NamedValues.erase(VarName);
 
       // for expr always returns 0.0.
-      return Constant::getNullValue(Type::getDoubleTy(getGlobalContext()));
+      return Constant::getNullValue(Type::getDoubleTy(LLVMContext));
     }
 
 The final code handles various cleanups: now that we have the "NextVar"
@@ -759,7 +759,7 @@ value, we can add the incoming value to the loop PHI node. After that,
 we remove the loop variable from the symbol table, so that it isn't in
 scope after the for loop. Finally, code generation of the for loop
 always returns 0.0, so that is what we return from
-``ForExprAST::Codegen``.
+``ForExprAST::codegen()``.
 
 With this, we conclude the "adding control flow to Kaleidoscope" chapter
 of the tutorial. In this chapter we added two control flow constructs,

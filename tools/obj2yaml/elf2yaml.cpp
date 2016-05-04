@@ -11,7 +11,7 @@
 #include "obj2yaml.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/ELFObjectFile.h"
-#include "llvm/Object/ELFYAML.h"
+#include "llvm/ObjectYAML/ELFYAML.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/YAMLTraits.h"
 
@@ -34,7 +34,7 @@ class ELFDumper {
   std::error_code dumpCommonRelocationSection(const Elf_Shdr *Shdr,
                                               ELFYAML::RelocationSection &S);
   template <class RelT>
-  std::error_code dumpRelocation(const Elf_Shdr *Shdr, const RelT *Rel,
+  std::error_code dumpRelocation(const RelT *Rel, const Elf_Shdr *SymTab,
                                  ELFYAML::Relocation &R);
 
   ErrorOr<ELFYAML::RelocationSection *> dumpRelSection(const Elf_Shdr *Shdr);
@@ -179,10 +179,10 @@ ELFDumper<ELFT>::dumpSymbol(const Elf_Sym *Sym, const Elf_Shdr *SymTab,
   S.Size = Sym->st_size;
   S.Other = Sym->st_other;
 
-  ErrorOr<StringRef> NameOrErr = Sym->getName(StrTable);
-  if (std::error_code EC = NameOrErr.getError())
-    return EC;
-  S.Name = NameOrErr.get();
+  Expected<StringRef> SymbolNameOrErr = Sym->getName(StrTable);
+  if (!SymbolNameOrErr)
+    return errorToErrorCode(SymbolNameOrErr.takeError());
+  S.Name = SymbolNameOrErr.get();
 
   ErrorOr<const Elf_Shdr *> ShdrOrErr = Obj.getSection(Sym, SymTab, ShndxTable);
   if (std::error_code EC = ShdrOrErr.getError())
@@ -191,7 +191,7 @@ ELFDumper<ELFT>::dumpSymbol(const Elf_Sym *Sym, const Elf_Shdr *SymTab,
   if (!Shdr)
     return obj2yaml_error::success;
 
-  NameOrErr = Obj.getSectionName(Shdr);
+  ErrorOr<StringRef> NameOrErr = Obj.getSectionName(Shdr);
   if (std::error_code EC = NameOrErr.getError())
     return EC;
   S.Section = NameOrErr.get();
@@ -201,18 +201,14 @@ ELFDumper<ELFT>::dumpSymbol(const Elf_Sym *Sym, const Elf_Shdr *SymTab,
 
 template <class ELFT>
 template <class RelT>
-std::error_code ELFDumper<ELFT>::dumpRelocation(const Elf_Shdr *Shdr,
-                                                const RelT *Rel,
+std::error_code ELFDumper<ELFT>::dumpRelocation(const RelT *Rel,
+                                                const Elf_Shdr *SymTab,
                                                 ELFYAML::Relocation &R) {
   R.Type = Rel->getType(Obj.isMips64EL());
   R.Offset = Rel->r_offset;
   R.Addend = 0;
 
-  auto NamePair = Obj.getRelocationSymbol(Shdr, Rel);
-  if (!NamePair.first)
-    return obj2yaml_error::success;
-
-  const Elf_Shdr *SymTab = NamePair.first;
+  const Elf_Sym *Sym = Obj.getRelocationSymbol(Rel, SymTab);
   ErrorOr<const Elf_Shdr *> StrTabSec = Obj.getSection(SymTab->sh_link);
   if (std::error_code EC = StrTabSec.getError())
     return EC;
@@ -221,9 +217,9 @@ std::error_code ELFDumper<ELFT>::dumpRelocation(const Elf_Shdr *Shdr,
     return EC;
   StringRef StrTab = *StrTabOrErr;
 
-  ErrorOr<StringRef> NameOrErr = NamePair.second->getName(StrTab);
-  if (std::error_code EC = NameOrErr.getError())
-    return EC;
+  Expected<StringRef> NameOrErr = Sym->getName(StrTab);
+  if (!NameOrErr)
+    return errorToErrorCode(NameOrErr.takeError());
   R.Symbol = NameOrErr.get();
 
   return obj2yaml_error::success;
@@ -283,9 +279,14 @@ ELFDumper<ELFT>::dumpRelSection(const Elf_Shdr *Shdr) {
   if (std::error_code EC = dumpCommonRelocationSection(Shdr, *S))
     return EC;
 
+  ErrorOr<const Elf_Shdr *> SymTabOrErr = Obj.getSection(Shdr->sh_link);
+  if (std::error_code EC = SymTabOrErr.getError())
+    return EC;
+  const Elf_Shdr *SymTab = *SymTabOrErr;
+
   for (auto RI = Obj.rel_begin(Shdr), RE = Obj.rel_end(Shdr); RI != RE; ++RI) {
     ELFYAML::Relocation R;
-    if (std::error_code EC = dumpRelocation(Shdr, &*RI, R))
+    if (std::error_code EC = dumpRelocation(&*RI, SymTab, R))
       return EC;
     S->Relocations.push_back(R);
   }
@@ -302,10 +303,15 @@ ELFDumper<ELFT>::dumpRelaSection(const Elf_Shdr *Shdr) {
   if (std::error_code EC = dumpCommonRelocationSection(Shdr, *S))
     return EC;
 
+  ErrorOr<const Elf_Shdr *> SymTabOrErr = Obj.getSection(Shdr->sh_link);
+  if (std::error_code EC = SymTabOrErr.getError())
+    return EC;
+  const Elf_Shdr *SymTab = *SymTabOrErr;
+
   for (auto RI = Obj.rela_begin(Shdr), RE = Obj.rela_end(Shdr); RI != RE;
        ++RI) {
     ELFYAML::Relocation R;
-    if (std::error_code EC = dumpRelocation(Shdr, &*RI, R))
+    if (std::error_code EC = dumpRelocation(&*RI, SymTab, R))
       return EC;
     R.Addend = RI->r_addend;
     S->Relocations.push_back(R);
@@ -362,9 +368,9 @@ ErrorOr<ELFYAML::Group *> ELFDumper<ELFT>::dumpGroup(const Elf_Shdr *Shdr) {
   auto sectionContents = Obj.getSectionContents(Shdr);
   if (std::error_code ec = sectionContents.getError())
     return ec;
-  ErrorOr<StringRef> symbolName = symbol->getName(StrTab);
-  if (std::error_code EC = symbolName.getError())
-    return EC;
+  Expected<StringRef> symbolName = symbol->getName(StrTab);
+  if (!symbolName)
+    return errorToErrorCode(symbolName.takeError());
   S->Info = *symbolName;
   const Elf_Word *groupMembers =
       reinterpret_cast<const Elf_Word *>(sectionContents->data());

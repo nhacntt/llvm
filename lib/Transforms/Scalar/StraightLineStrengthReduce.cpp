@@ -57,8 +57,6 @@
 //   SLSR.
 #include <vector>
 
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/FoldingSet.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -75,6 +73,8 @@ using namespace llvm;
 using namespace PatternMatch;
 
 namespace {
+
+static const unsigned UnknownAddressSpace = ~0u;
 
 class StraightLineStrengthReduce : public FunctionPass {
 public:
@@ -270,7 +270,7 @@ static bool isGEPFoldable(GetElementPtrInst *GEP,
   }
 
   unsigned AddrSpace = GEP->getPointerAddressSpace();
-  return TTI->isLegalAddressingMode(GEP->getType()->getElementType(), BaseGV,
+  return TTI->isLegalAddressingMode(GEP->getResultElementType(), BaseGV,
                                     BaseOffset, HasBaseReg, Scale, AddrSpace);
 }
 
@@ -278,7 +278,7 @@ static bool isGEPFoldable(GetElementPtrInst *GEP,
 static bool isAddFoldable(const SCEV *Base, ConstantInt *Index, Value *Stride,
                           TargetTransformInfo *TTI) {
   return TTI->isLegalAddressingMode(Base->getType(), nullptr, 0, true,
-                                    Index->getSExtValue());
+                                    Index->getSExtValue(), UnknownAddressSpace);
 }
 
 bool StraightLineStrengthReduce::isFoldable(const Candidate &C,
@@ -524,7 +524,7 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasisForGEP(
       continue;
 
     const SCEV *OrigIndexExpr = IndexExprs[I - 1];
-    IndexExprs[I - 1] = SE->getConstant(OrigIndexExpr->getType(), 0);
+    IndexExprs[I - 1] = SE->getZero(OrigIndexExpr->getType());
 
     // The base of this candidate is GEP's base plus the offsets of all
     // indices except this current one.
@@ -566,8 +566,7 @@ Value *StraightLineStrengthReduce::emitBump(const Candidate &Basis,
   if (Basis.CandidateKind == Candidate::GEP) {
     APInt ElementSize(
         IndexOffset.getBitWidth(),
-        DL->getTypeAllocSize(
-            cast<GetElementPtrInst>(Basis.Ins)->getType()->getElementType()));
+        DL->getTypeAllocSize(cast<GetElementPtrInst>(Basis.Ins)->getResultElementType()));
     APInt Q, R;
     APInt::sdivrem(IndexOffset, ElementSize, Q, R);
     if (R.getSExtValue() == 0)
@@ -685,7 +684,7 @@ void StraightLineStrengthReduce::rewriteCandidateWithBasis(
 }
 
 bool StraightLineStrengthReduce::runOnFunction(Function &F) {
-  if (skipOptnoneFunction(F))
+  if (skipFunction(F))
     return false;
 
   TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);

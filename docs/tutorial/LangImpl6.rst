@@ -24,7 +24,7 @@ is good or bad. In this tutorial we'll assume that it is okay to use
 this as a way to show some interesting parsing techniques.
 
 At the end of this tutorial, we'll run through an example Kaleidoscope
-application that `renders the Mandelbrot set <#example>`_. This gives an
+application that `renders the Mandelbrot set <#kicking-the-tires>`_. This gives an
 example of what you can build with Kaleidoscope and its feature set.
 
 User-defined Operators: the Idea
@@ -113,7 +113,7 @@ keywords:
         return tok_identifier;
 
 This just adds lexer support for the unary and binary keywords, like we
-did in `previous chapters <LangImpl5.html#iflexer>`_. One nice thing
+did in `previous chapters <LangImpl5.html#lexer-extensions-for-if-then-else>`_. One nice thing
 about our current AST, is that we represent binary operators with full
 generalisation by using their ASCII code as the opcode. For our extended
 operators, we'll use this same representation, so we don't need any new
@@ -153,7 +153,7 @@ this:
 
       unsigned getBinaryPrecedence() const { return Precedence; }
 
-      Function *Codegen();
+      Function *codegen();
     };
 
 Basically, in addition to knowing a name for the prototype, we now keep
@@ -176,7 +176,7 @@ user-defined operator, we need to parse it:
 
       switch (CurTok) {
       default:
-        return ErrorP("Expected function name in prototype");
+        return LogErrorP("Expected function name in prototype");
       case tok_identifier:
         FnName = IdentifierStr;
         Kind = 0;
@@ -185,7 +185,7 @@ user-defined operator, we need to parse it:
       case tok_binary:
         getNextToken();
         if (!isascii(CurTok))
-          return ErrorP("Expected binary operator");
+          return LogErrorP("Expected binary operator");
         FnName = "binary";
         FnName += (char)CurTok;
         Kind = 2;
@@ -194,7 +194,7 @@ user-defined operator, we need to parse it:
         // Read the precedence if present.
         if (CurTok == tok_number) {
           if (NumVal < 1 || NumVal > 100)
-            return ErrorP("Invalid precedecnce: must be 1..100");
+            return LogErrorP("Invalid precedecnce: must be 1..100");
           BinaryPrecedence = (unsigned)NumVal;
           getNextToken();
         }
@@ -202,20 +202,20 @@ user-defined operator, we need to parse it:
       }
 
       if (CurTok != '(')
-        return ErrorP("Expected '(' in prototype");
+        return LogErrorP("Expected '(' in prototype");
 
       std::vector<std::string> ArgNames;
       while (getNextToken() == tok_identifier)
         ArgNames.push_back(IdentifierStr);
       if (CurTok != ')')
-        return ErrorP("Expected ')' in prototype");
+        return LogErrorP("Expected ')' in prototype");
 
       // success.
       getNextToken();  // eat ')'.
 
       // Verify right number of names for operator.
       if (Kind && ArgNames.size() != Kind)
-        return ErrorP("Invalid number of operands for operator");
+        return LogErrorP("Invalid number of operands for operator");
 
       return llvm::make_unique<PrototypeAST>(FnName, std::move(ArgNames), Kind != 0,
                                              BinaryPrecedence);
@@ -235,9 +235,9 @@ default case for our existing binary operator node:
 
 .. code-block:: c++
 
-    Value *BinaryExprAST::Codegen() {
-      Value *L = LHS->Codegen();
-      Value *R = RHS->Codegen();
+    Value *BinaryExprAST::codegen() {
+      Value *L = LHS->codegen();
+      Value *R = RHS->codegen();
       if (!L || !R)
         return nullptr;
 
@@ -251,7 +251,7 @@ default case for our existing binary operator node:
       case '<':
         L = Builder.CreateFCmpULT(L, R, "cmptmp");
         // Convert bool 0/1 to double 0.0 or 1.0
-        return Builder.CreateUIToFP(L, Type::getDoubleTy(getGlobalContext()),
+        return Builder.CreateUIToFP(L, Type::getDoubleTy(LLVMContext),
                                     "booltmp");
       default:
         break;
@@ -276,10 +276,10 @@ The final piece of code we are missing, is a bit of top-level magic:
 
 .. code-block:: c++
 
-    Function *FunctionAST::Codegen() {
+    Function *FunctionAST::codegen() {
       NamedValues.clear();
 
-      Function *TheFunction = Proto->Codegen();
+      Function *TheFunction = Proto->codegen();
       if (!TheFunction)
         return nullptr;
 
@@ -288,10 +288,10 @@ The final piece of code we are missing, is a bit of top-level magic:
         BinopPrecedence[Proto->getOperatorName()] = Proto->getBinaryPrecedence();
 
       // Create a new basic block to start insertion into.
-      BasicBlock *BB = BasicBlock::Create(getGlobalContext(), "entry", TheFunction);
+      BasicBlock *BB = BasicBlock::Create(LLVMContext, "entry", TheFunction);
       Builder.SetInsertPoint(BB);
 
-      if (Value *RetVal = Body->Codegen()) {
+      if (Value *RetVal = Body->codegen()) {
         ...
 
 Basically, before codegening a function, if it is a user-defined
@@ -323,7 +323,7 @@ that, we need an AST node:
     public:
       UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
         : Opcode(Opcode), Operand(std::move(Operand)) {}
-      virtual Value *Codegen();
+      virtual Value *codegen();
     };
 
 This AST node is very simple and obvious by now. It directly mirrors the
@@ -403,7 +403,7 @@ operator code above with:
 
       switch (CurTok) {
       default:
-        return ErrorP("Expected function name in prototype");
+        return LogErrorP("Expected function name in prototype");
       case tok_identifier:
         FnName = IdentifierStr;
         Kind = 0;
@@ -412,7 +412,7 @@ operator code above with:
       case tok_unary:
         getNextToken();
         if (!isascii(CurTok))
-          return ErrorP("Expected unary operator");
+          return LogErrorP("Expected unary operator");
         FnName = "unary";
         FnName += (char)CurTok;
         Kind = 1;
@@ -428,14 +428,14 @@ unary operators. It looks like this:
 
 .. code-block:: c++
 
-    Value *UnaryExprAST::Codegen() {
-      Value *OperandV = Operand->Codegen();
+    Value *UnaryExprAST::codegen() {
+      Value *OperandV = Operand->codegen();
       if (!OperandV)
         return nullptr;
 
       Function *F = TheModule->getFunction(std::string("unary")+Opcode);
       if (!F)
-        return ErrorV("Unknown unary operator");
+        return LogErrorV("Unknown unary operator");
 
       return Builder.CreateCall(F, OperandV, "unop");
     }

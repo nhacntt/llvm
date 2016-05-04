@@ -10,6 +10,7 @@
 #ifndef LLVM_TOOLS_LLVMPDBDUMP_BUILTINDUMPER_H
 #define LLVM_TOOLS_LLVMPDBDUMP_BUILTINDUMPER_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/DebugInfo/PDB/PDBSymDumper.h"
 
 namespace llvm {
@@ -23,6 +24,8 @@ public:
   void start(const PDBSymbolTypeBuiltin &Symbol);
 
 private:
+  StringRef getTypeName(const PDBSymbolTypeBuiltin &Symbol);
+
   LinePrinter &Printer;
 };
 }

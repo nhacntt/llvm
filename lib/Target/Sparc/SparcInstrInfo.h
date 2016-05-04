@@ -76,6 +76,9 @@ public:
                         MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
                         DebugLoc DL) const override;
 
+  bool
+  ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const override;
+
   void copyPhysReg(MachineBasicBlock &MBB,
                    MachineBasicBlock::iterator I, DebugLoc DL,
                    unsigned DestReg, unsigned SrcReg,
@@ -94,6 +97,9 @@ public:
                             const TargetRegisterInfo *TRI) const override;
 
   unsigned getGlobalBaseReg(MachineFunction *MF) const;
+
+  // Lower pseudo instructions after register allocation.
+  bool expandPostRAPseudo(MachineBasicBlock::iterator MI) const override;
 };
 
 }

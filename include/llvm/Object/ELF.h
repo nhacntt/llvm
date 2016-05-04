@@ -53,13 +53,19 @@ public:
   typedef Elf_Vernaux_Impl<ELFT> Elf_Vernaux;
   typedef Elf_Versym_Impl<ELFT> Elf_Versym;
   typedef Elf_Hash_Impl<ELFT> Elf_Hash;
-  typedef iterator_range<const Elf_Dyn *> Elf_Dyn_Range;
-  typedef iterator_range<const Elf_Shdr *> Elf_Shdr_Range;
-  typedef iterator_range<const Elf_Sym *> Elf_Sym_Range;
+  typedef Elf_GnuHash_Impl<ELFT> Elf_GnuHash;
+  typedef typename ELFT::DynRange Elf_Dyn_Range;
+  typedef typename ELFT::ShdrRange Elf_Shdr_Range;
+  typedef typename ELFT::SymRange Elf_Sym_Range;
+  typedef typename ELFT::RelRange Elf_Rel_Range;
+  typedef typename ELFT::RelaRange Elf_Rela_Range;
+  typedef typename ELFT::PhdrRange Elf_Phdr_Range;
 
   const uint8_t *base() const {
     return reinterpret_cast<const uint8_t *>(Buf.data());
   }
+
+  size_t getBufSize() const { return Buf.size(); }
 
 private:
 
@@ -86,10 +92,9 @@ public:
   void getRelocationTypeName(uint32_t Type,
                              SmallVectorImpl<char> &Result) const;
 
-  /// \brief Get the symbol table section and symbol for a given relocation.
-  template <class RelT>
-  std::pair<const Elf_Shdr *, const Elf_Sym *>
-  getRelocationSymbol(const Elf_Shdr *RelSec, const RelT *Rel) const;
+  /// \brief Get the symbol for a given relocation.
+  const Elf_Sym *getRelocationSymbol(const Elf_Rel *Rel,
+                                     const Elf_Shdr *SymTab) const;
 
   ELFFile(StringRef Object, std::error_code &EC);
 
@@ -104,22 +109,10 @@ public:
       Header->getDataEncoding() == ELF::ELFDATA2LSB;
   }
 
-  ErrorOr<const Elf_Dyn *> dynamic_table_begin(const Elf_Phdr *Phdr) const;
-  ErrorOr<const Elf_Dyn *> dynamic_table_end(const Elf_Phdr *Phdr) const;
-  ErrorOr<Elf_Dyn_Range> dynamic_table(const Elf_Phdr *Phdr) const {
-    ErrorOr<const Elf_Dyn *> Begin = dynamic_table_begin(Phdr);
-    if (std::error_code EC = Begin.getError())
-      return EC;
-    ErrorOr<const Elf_Dyn *> End = dynamic_table_end(Phdr);
-    if (std::error_code EC = End.getError())
-      return EC;
-    return make_range(*Begin, *End);
-  }
-
   const Elf_Shdr *section_begin() const;
   const Elf_Shdr *section_end() const;
   Elf_Shdr_Range sections() const {
-    return make_range(section_begin(), section_end());
+    return makeArrayRef(section_begin(), section_end());
   }
 
   const Elf_Sym *symbol_begin(const Elf_Shdr *Sec) const {
@@ -138,10 +131,8 @@ public:
     return symbol_begin(Sec) + Size / sizeof(Elf_Sym);
   }
   Elf_Sym_Range symbols(const Elf_Shdr *Sec) const {
-    return make_range(symbol_begin(Sec), symbol_end(Sec));
+    return makeArrayRef(symbol_begin(Sec), symbol_end(Sec));
   }
-
-  typedef iterator_range<const Elf_Rela *> Elf_Rela_Range;
 
   const Elf_Rela *rela_begin(const Elf_Shdr *sec) const {
     if (sec->sh_entsize != sizeof(Elf_Rela))
@@ -157,7 +148,7 @@ public:
   }
 
   Elf_Rela_Range relas(const Elf_Shdr *Sec) const {
-    return make_range(rela_begin(Sec), rela_end(Sec));
+    return makeArrayRef(rela_begin(Sec), rela_end(Sec));
   }
 
   const Elf_Rel *rel_begin(const Elf_Shdr *sec) const {
@@ -173,9 +164,8 @@ public:
     return rel_begin(sec) + Size / sizeof(Elf_Rel);
   }
 
-  typedef iterator_range<const Elf_Rel *> Elf_Rel_Range;
   Elf_Rel_Range rels(const Elf_Shdr *Sec) const {
-    return make_range(rel_begin(Sec), rel_end(Sec));
+    return makeArrayRef(rel_begin(Sec), rel_end(Sec));
   }
 
   /// \brief Iterate over program header table.
@@ -189,17 +179,18 @@ public:
     return program_header_begin() + Header->e_phnum;
   }
 
-  typedef iterator_range<const Elf_Phdr *> Elf_Phdr_Range;
-
   const Elf_Phdr_Range program_headers() const {
-    return make_range(program_header_begin(), program_header_end());
+    return makeArrayRef(program_header_begin(), program_header_end());
   }
 
   uint64_t getNumSections() const;
   uintX_t getStringTableIndex() const;
-  ELF::Elf64_Word
-  getExtendedSymbolTableIndex(const Elf_Sym *Sym, const Elf_Shdr *SymTab,
-                              ArrayRef<Elf_Word> ShndxTable) const;
+  uint32_t getExtendedSymbolTableIndex(const Elf_Sym *Sym,
+                                       const Elf_Shdr *SymTab,
+                                       ArrayRef<Elf_Word> ShndxTable) const;
+  uint32_t getExtendedSymbolTableIndex(const Elf_Sym *Sym,
+                                       const Elf_Sym *FirstSym,
+                                       ArrayRef<Elf_Word> ShndxTable) const;
   const Elf_Ehdr *getHeader() const { return Header; }
   ErrorOr<const Elf_Shdr *> getSection(const Elf_Sym *Sym,
                                        const Elf_Shdr *SymTab,
@@ -211,6 +202,8 @@ public:
   }
 
   ErrorOr<StringRef> getSectionName(const Elf_Shdr *Section) const;
+  template <typename T>
+  ErrorOr<ArrayRef<T>> getSectionContentsAsArray(const Elf_Shdr *Sec) const;
   ErrorOr<ArrayRef<uint8_t> > getSectionContents(const Elf_Shdr *Sec) const;
 };
 
@@ -220,13 +213,20 @@ typedef ELFFile<ELFType<support::big, false>> ELF32BEFile;
 typedef ELFFile<ELFType<support::big, true>> ELF64BEFile;
 
 template <class ELFT>
-ELF::Elf64_Word ELFFile<ELFT>::getExtendedSymbolTableIndex(
+uint32_t ELFFile<ELFT>::getExtendedSymbolTableIndex(
     const Elf_Sym *Sym, const Elf_Shdr *SymTab,
     ArrayRef<Elf_Word> ShndxTable) const {
-  assert(Sym->st_shndx == ELF::SHN_XINDEX);
-  unsigned Index = Sym - symbol_begin(SymTab);
+  return getExtendedSymbolTableIndex(Sym, symbol_begin(SymTab), ShndxTable);
+}
 
-  // FIXME: error checking
+template <class ELFT>
+uint32_t ELFFile<ELFT>::getExtendedSymbolTableIndex(
+    const Elf_Sym *Sym, const Elf_Sym *FirstSym,
+    ArrayRef<Elf_Word> ShndxTable) const {
+  assert(Sym->st_shndx == ELF::SHN_XINDEX);
+  unsigned Index = Sym - FirstSym;
+
+  // The size of the table was checked in getSHNDXTable.
   return ShndxTable[Index];
 }
 
@@ -244,12 +244,25 @@ ELFFile<ELFT>::getSection(const Elf_Sym *Sym, const Elf_Shdr *SymTab,
 }
 
 template <class ELFT>
-ErrorOr<ArrayRef<uint8_t> >
-ELFFile<ELFT>::getSectionContents(const Elf_Shdr *Sec) const {
-  if (Sec->sh_offset + Sec->sh_size > Buf.size())
+template <typename T>
+ErrorOr<ArrayRef<T>>
+ELFFile<ELFT>::getSectionContentsAsArray(const Elf_Shdr *Sec) const {
+  uintX_t Offset = Sec->sh_offset;
+  uintX_t Size = Sec->sh_size;
+
+  if (Size % sizeof(T))
     return object_error::parse_failed;
-  const uint8_t *Start = base() + Sec->sh_offset;
-  return makeArrayRef(Start, Sec->sh_size);
+  if (Offset + Size > Buf.size())
+    return object_error::parse_failed;
+
+  const T *Start = reinterpret_cast<const T *>(base() + Offset);
+  return makeArrayRef(Start, Size / sizeof(T));
+}
+
+template <class ELFT>
+ErrorOr<ArrayRef<uint8_t>>
+ELFFile<ELFT>::getSectionContents(const Elf_Shdr *Sec) const {
+  return getSectionContentsAsArray<uint8_t>(Sec);
 }
 
 template <class ELFT>
@@ -289,18 +302,13 @@ void ELFFile<ELFT>::getRelocationTypeName(uint32_t Type,
 }
 
 template <class ELFT>
-template <class RelT>
-std::pair<const typename ELFFile<ELFT>::Elf_Shdr *,
-          const typename ELFFile<ELFT>::Elf_Sym *>
-ELFFile<ELFT>::getRelocationSymbol(const Elf_Shdr *Sec, const RelT *Rel) const {
-  if (!Sec->sh_link)
-    return std::make_pair(nullptr, nullptr);
-  ErrorOr<const Elf_Shdr *> SymTableOrErr = getSection(Sec->sh_link);
-  if (std::error_code EC = SymTableOrErr.getError())
-    report_fatal_error(EC.message());
-  const Elf_Shdr *SymTable = *SymTableOrErr;
-  return std::make_pair(
-      SymTable, getEntry<Elf_Sym>(SymTable, Rel->getSymbol(isMips64EL())));
+const typename ELFFile<ELFT>::Elf_Sym *
+ELFFile<ELFT>::getRelocationSymbol(const Elf_Rel *Rel,
+                                   const Elf_Shdr *SymTab) const {
+  uint32_t Index = Rel->getSymbol(isMips64EL());
+  if (Index == 0)
+    return nullptr;
+  return getEntry<Elf_Sym>(SymTab, Index);
 }
 
 template <class ELFT>
@@ -394,34 +402,6 @@ const typename ELFFile<ELFT>::Elf_Shdr *ELFFile<ELFT>::section_end() const {
 }
 
 template <class ELFT>
-ErrorOr<const typename ELFFile<ELFT>::Elf_Dyn *>
-ELFFile<ELFT>::dynamic_table_begin(const Elf_Phdr *Phdr) const {
-  if (!Phdr)
-    return nullptr;
-  assert(Phdr->p_type == ELF::PT_DYNAMIC && "Got the wrong program header");
-  uintX_t Offset = Phdr->p_offset;
-  if (Offset > Buf.size())
-    return object_error::parse_failed;
-  return reinterpret_cast<const Elf_Dyn *>(base() + Offset);
-}
-
-template <class ELFT>
-ErrorOr<const typename ELFFile<ELFT>::Elf_Dyn *>
-ELFFile<ELFT>::dynamic_table_end(const Elf_Phdr *Phdr) const {
-  if (!Phdr)
-    return nullptr;
-  assert(Phdr->p_type == ELF::PT_DYNAMIC && "Got the wrong program header");
-  uintX_t Size = Phdr->p_filesz;
-  if (Size % sizeof(Elf_Dyn))
-    return object_error::elf_invalid_dynamic_table_size;
-  // FIKME: Check for overflow?
-  uintX_t End = Phdr->p_offset + Size;
-  if (End > Buf.size())
-    return object_error::parse_failed;
-  return reinterpret_cast<const Elf_Dyn *>(base() + End);
-}
-
-template <class ELFT>
 template <typename T>
 const T *ELFFile<ELFT>::getEntry(uint32_t Section, uint32_t Entry) const {
   ErrorOr<const Elf_Shdr *> Sec = getSection(Section);
@@ -471,13 +451,23 @@ ELFFile<ELFT>::getSHNDXTable(const Elf_Shdr &Section) const {
   assert(Section.sh_type == ELF::SHT_SYMTAB_SHNDX);
   const Elf_Word *ShndxTableBegin =
       reinterpret_cast<const Elf_Word *>(base() + Section.sh_offset);
-  uintX_t Size = Section.sh_offset;
-  if (Size % sizeof(uintX_t))
+  uintX_t Size = Section.sh_size;
+  if (Size % sizeof(uint32_t))
     return object_error::parse_failed;
-  const Elf_Word *ShndxTableEnd = ShndxTableBegin + Size / sizeof(uintX_t);
+  uintX_t NumSymbols = Size / sizeof(uint32_t);
+  const Elf_Word *ShndxTableEnd = ShndxTableBegin + NumSymbols;
   if (reinterpret_cast<const char *>(ShndxTableEnd) > Buf.end())
     return object_error::parse_failed;
-  return ArrayRef<Elf_Word>(ShndxTableBegin, ShndxTableEnd);
+  ErrorOr<const Elf_Shdr *> SymTableOrErr = getSection(Section.sh_link);
+  if (std::error_code EC = SymTableOrErr.getError())
+    return EC;
+  const Elf_Shdr &SymTable = **SymTableOrErr;
+  if (SymTable.sh_type != ELF::SHT_SYMTAB &&
+      SymTable.sh_type != ELF::SHT_DYNSYM)
+    return object_error::parse_failed;
+  if (NumSymbols != (SymTable.sh_size / sizeof(Elf_Sym)))
+    return object_error::parse_failed;
+  return makeArrayRef(ShndxTableBegin, ShndxTableEnd);
 }
 
 template <class ELFT>

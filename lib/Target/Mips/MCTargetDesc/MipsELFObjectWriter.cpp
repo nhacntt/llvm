@@ -18,7 +18,6 @@
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <list>
 
 using namespace llvm;
 
@@ -44,8 +43,8 @@ struct MipsRelocationEntry {
 
     ~MipsELFObjectWriter() override;
 
-    unsigned GetRelocType(const MCValue &Target, const MCFixup &Fixup,
-                          bool IsPCRel) const override;
+    unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
+                          const MCFixup &Fixup, bool IsPCRel) const override;
     bool needsRelocateWithSymbol(const MCSymbol &Sym,
                                  unsigned Type) const override;
     virtual void sortRelocs(const MCAssembler &Asm,
@@ -61,13 +60,16 @@ MipsELFObjectWriter::MipsELFObjectWriter(bool _is64Bit, uint8_t OSABI,
 
 MipsELFObjectWriter::~MipsELFObjectWriter() {}
 
-unsigned MipsELFObjectWriter::GetRelocType(const MCValue &Target,
+unsigned MipsELFObjectWriter::getRelocType(MCContext &Ctx,
+                                           const MCValue &Target,
                                            const MCFixup &Fixup,
                                            bool IsPCRel) const {
   // Determine the type of the relocation.
   unsigned Kind = (unsigned)Fixup.getKind();
 
   switch (Kind) {
+  case Mips::fixup_Mips_NONE:
+    return ELF::R_MIPS_NONE;
   case Mips::fixup_Mips_16:
   case FK_Data_2:
     return IsPCRel ? ELF::R_MIPS_PC16 : ELF::R_MIPS_16;
@@ -87,6 +89,12 @@ unsigned MipsELFObjectWriter::GetRelocType(const MCValue &Target,
       return ELF::R_MICROMIPS_PC10_S1;
     case Mips::fixup_MICROMIPS_PC16_S1:
       return ELF::R_MICROMIPS_PC16_S1;
+    case Mips::fixup_MICROMIPS_PC26_S1:
+      return ELF::R_MICROMIPS_PC26_S1;
+    case Mips::fixup_MICROMIPS_PC19_S2:
+      return ELF::R_MICROMIPS_PC19_S2;
+    case Mips::fixup_MICROMIPS_PC18_S3:
+      return ELF::R_MICROMIPS_PC18_S3;
     case Mips::fixup_MIPS_PC19_S2:
       return ELF::R_MIPS_PC19_S2;
     case Mips::fixup_MIPS_PC18_S3:
@@ -123,8 +131,7 @@ unsigned MipsELFObjectWriter::GetRelocType(const MCValue &Target,
     return ELF::R_MIPS_26;
   case Mips::fixup_Mips_CALL16:
     return ELF::R_MIPS_CALL16;
-  case Mips::fixup_Mips_GOT_Global:
-  case Mips::fixup_Mips_GOT_Local:
+  case Mips::fixup_Mips_GOT:
     return ELF::R_MIPS_GOT16;
   case Mips::fixup_Mips_HI16:
     return ELF::R_MIPS_HI16;
@@ -325,13 +332,25 @@ static void setMatch(MipsRelocationEntry &Hi, MipsRelocationEntry &Lo) {
 //   matching LO;
 // - prefer LOs without a pair;
 // - prefer LOs with higher offset;
+
+static int cmpRel(const ELFRelocationEntry *AP, const ELFRelocationEntry *BP) {
+  const ELFRelocationEntry &A = *AP;
+  const ELFRelocationEntry &B = *BP;
+  if (A.Offset < B.Offset)
+    return 1;
+  if (A.Offset > B.Offset)
+    return -1;
+  assert(B.Type != A.Type && "We don't have a total order");
+  return A.Type - B.Type;
+}
+
 void MipsELFObjectWriter::sortRelocs(const MCAssembler &Asm,
                                      std::vector<ELFRelocationEntry> &Relocs) {
   if (Relocs.size() < 2)
     return;
 
-  // The default function sorts entries by Offset in descending order.
-  MCELFObjectTargetWriter::sortRelocs(Asm, Relocs);
+  // Sorts entries by Offset in descending order.
+  array_pod_sort(Relocs.begin(), Relocs.end(), cmpRel);
 
   // Init MipsRelocs from Relocs.
   std::vector<MipsRelocationEntry> MipsRelocs;
@@ -382,7 +401,7 @@ bool MipsELFObjectWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
   case ELF::R_MIPS_GOT16:
   case ELF::R_MIPS16_GOT16:
   case ELF::R_MICROMIPS_GOT16:
-    llvm_unreachable("Should have been handled already");
+    return true;
 
   // These relocations might be paired with another relocation. The pairing is
   // done by the static linker by matching the symbol. Since we only see one
@@ -397,6 +416,7 @@ bool MipsELFObjectWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
   case ELF::R_MICROMIPS_LO16:
     return true;
 
+  case ELF::R_MIPS_16:
   case ELF::R_MIPS_32:
     if (cast<MCSymbolELF>(Sym).getOther() & ELF::STO_MIPS_MICROMIPS)
       return true;

@@ -44,14 +44,6 @@ namespace {
     // For this pass, process all of the globals in the module, eliminating
     // duplicate constants.
     bool runOnModule(Module &M) override;
-
-    // Return true iff we can determine the alignment of this global variable.
-    bool hasKnownAlignment(GlobalVariable *GV) const;
-
-    // Return the alignment of the global, including converting the default
-    // alignment to a concrete value.
-    unsigned getAlignment(GlobalVariable *GV) const;
-
   };
 }
 
@@ -88,7 +80,7 @@ static bool IsBetterCanonical(const GlobalVariable &A,
   return A.hasUnnamedAddr();
 }
 
-unsigned ConstantMerge::getAlignment(GlobalVariable *GV) const {
+static unsigned getAlignment(GlobalVariable *GV) {
   unsigned Align = GV->getAlignment();
   if (Align)
     return Align;
@@ -96,6 +88,8 @@ unsigned ConstantMerge::getAlignment(GlobalVariable *GV) const {
 }
 
 bool ConstantMerge::runOnModule(Module &M) {
+  if (skipModule(M))
+    return false;
 
   // Find all the globals that are marked "used".  These cannot be merged.
   SmallPtrSet<const GlobalValue*, 8> UsedGlobals;
@@ -119,7 +113,7 @@ bool ConstantMerge::runOnModule(Module &M) {
     // First: Find the canonical constants others will be merged with.
     for (Module::global_iterator GVI = M.global_begin(), E = M.global_end();
          GVI != E; ) {
-      GlobalVariable *GV = GVI++;
+      GlobalVariable *GV = &*GVI++;
 
       // If this GV is dead, remove it.
       GV->removeDeadConstantUsers();
@@ -160,7 +154,7 @@ bool ConstantMerge::runOnModule(Module &M) {
     // invalidating the Constant* pointers in CMap.
     for (Module::global_iterator GVI = M.global_begin(), E = M.global_end();
          GVI != E; ) {
-      GlobalVariable *GV = GVI++;
+      GlobalVariable *GV = &*GVI++;
 
       // Only process constants with initializers in the default address space.
       if (!GV->isConstant() || !GV->hasDefinitiveInitializer() ||

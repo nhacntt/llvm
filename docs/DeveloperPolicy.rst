@@ -186,7 +186,7 @@ problem, we have a notion of an 'owner' for a piece of the code.  The sole
 responsibility of a code owner is to ensure that a commit to their area of the
 code is appropriately reviewed, either by themself or by someone else.  The list
 of current code owners can be found in the file
-`CODE_OWNERS.TXT <http://llvm.org/viewvc/llvm-project/llvm/trunk/CODE_OWNERS.TXT?view=markup>`_
+`CODE_OWNERS.TXT <http://llvm.org/klaus/llvm/blob/master/CODE_OWNERS.TXT>`_
 in the root of the LLVM source tree.
 
 Note that code ownership is completely different than reviewers: anyone can
@@ -524,6 +524,33 @@ for llvm users and not imposing a big burden on llvm developers:
 * Non-debug metadata is defined to be safe to drop, so a valid way to upgrade
   it is to drop it. That is not very user friendly and a bit more effort is
   expected, but no promises are made.
+
+C API Changes
+----------------
+
+* Stability Guarantees: The C API is, in general, a "best effort" for stability.
+  This means that we make every attempt to keep the C API stable, but that
+  stability will be limited by the abstractness of the interface and the
+  stability of the C++ API that it wraps. In practice, this means that things
+  like "create debug info" or "create this type of instruction" are likely to be
+  less stable than "take this IR file and JIT it for my current machine".
+
+* Release stability: We won't break the C API on the release branch with patches
+  that go on that branch, with the exception that we will fix an unintentional
+  C API break that will keep the release consistent with both the previous and
+  next release.
+
+* Testing: Patches to the C API are expected to come with tests just like any
+  other patch.
+
+* Including new things into the API: If an LLVM subcomponent has a C API already
+  included, then expanding that C API is acceptable. Adding C API for
+  subcomponents that don't currently have one needs to be discussed on the
+  mailing list for design and maintainability feedback prior to implementation.
+
+* Documentation: Any changes to the C API are required to be documented in the
+  release notes so that it's clear to external users who do not follow the
+  project how the C API is changing and evolving.
 
 .. _copyright-license-patents:
 

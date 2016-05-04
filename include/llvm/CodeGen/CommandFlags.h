@@ -21,7 +21,7 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCTargetOptionsCommandFlags.h"
-#include "llvm//MC/SubtargetFeature.h"
+#include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Host.h"
@@ -177,20 +177,25 @@ DisableTailCalls("disable-tail-calls",
                  cl::desc("Never emit tail calls"),
                  cl::init(false));
 
+cl::opt<bool>
+StackSymbolOrdering("stack-symbol-ordering",
+                    cl::desc("Order local stack symbols."),
+                    cl::init(true));
+
 cl::opt<unsigned>
 OverrideStackAlignment("stack-alignment",
                        cl::desc("Override default stack alignment"),
                        cl::init(0));
 
+cl::opt<bool>
+StackRealign("stackrealign",
+             cl::desc("Force align the stack to the minimum alignment"),
+             cl::init(false));
+
 cl::opt<std::string>
 TrapFuncName("trap-func", cl::Hidden,
         cl::desc("Emit a call to trap function rather than a trap instruction"),
         cl::init(""));
-
-cl::opt<bool>
-EnablePIE("enable-pie",
-          cl::desc("Assume the creation of a position independent executable."),
-          cl::init(false));
 
 cl::opt<bool>
 UseCtors("use-ctors",
@@ -242,6 +247,26 @@ JTableType("jump-table-type",
                          "Create one table per unique function type."),
               clEnumValEnd));
 
+cl::opt<llvm::EABI> EABIVersion(
+    "meabi", cl::desc("Set EABI type (default depends on triple):"),
+    cl::init(EABI::Default),
+    cl::values(clEnumValN(EABI::Default, "default",
+                          "Triple default EABI version"),
+               clEnumValN(EABI::EABI4, "4", "EABI version 4"),
+               clEnumValN(EABI::EABI5, "5", "EABI version 5"),
+               clEnumValN(EABI::GNU, "gnu", "EABI GNU"), clEnumValEnd));
+
+cl::opt<DebuggerKind>
+DebuggerTuningOpt("debugger-tune",
+                  cl::desc("Tune debug info for a particular debugger"),
+                  cl::init(DebuggerKind::Default),
+                  cl::values(
+                      clEnumValN(DebuggerKind::GDB, "gdb", "gdb"),
+                      clEnumValN(DebuggerKind::LLDB, "lldb", "lldb"),
+                      clEnumValN(DebuggerKind::SCE, "sce",
+                                 "SCE targets (e.g. PS4)"),
+                      clEnumValEnd));
+
 // Common utility function tightly tied to the options listed here. Initializes
 // a TargetOptions object with CodeGen flags and returns it.
 static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
@@ -259,7 +284,7 @@ static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
   Options.NoZerosInBSS = DontPlaceZerosInBSS;
   Options.GuaranteedTailCallOpt = EnableGuaranteedTailCallOpt;
   Options.StackAlignmentOverride = OverrideStackAlignment;
-  Options.PositionIndependentExecutable = EnablePIE;
+  Options.StackSymbolOrdering = StackSymbolOrdering;
   Options.UseInitArray = !UseCtors;
   Options.DataSections = DataSections;
   Options.FunctionSections = FunctionSections;
@@ -270,6 +295,8 @@ static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
   Options.JTType = JTableType;
 
   Options.ThreadModel = TMModel;
+  Options.EABIVersion = EABIVersion;
+  Options.DebuggerTuning = DebuggerTuningOpt;
 
   return Options;
 }
@@ -329,6 +356,10 @@ static inline void setFunctionAttributes(StringRef CPU, StringRef Features,
       NewAttrs = NewAttrs.addAttribute(Ctx, AttributeSet::FunctionIndex,
                                        "disable-tail-calls",
                                        toStringRef(DisableTailCalls));
+
+    if (StackRealign)
+      NewAttrs = NewAttrs.addAttribute(Ctx, AttributeSet::FunctionIndex,
+                                       "stackrealign");
 
     if (TrapFuncName.getNumOccurrences() > 0)
       for (auto &B : F)

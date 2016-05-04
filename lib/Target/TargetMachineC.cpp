@@ -18,7 +18,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Support/CodeGen.h"
+#include "llvm/Support/CodeGenCWrappers.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/Host.h"
@@ -32,25 +32,14 @@
 
 using namespace llvm;
 
-
-// The TargetMachine uses to offer access to a DataLayout member. This is reflected
-// in the C API. For backward compatibility reason, this structure allows to keep
-// a DataLayout member accessible to C client that have a handle to a
-// LLVMTargetMachineRef.
-struct LLVMOpaqueTargetMachine {
-  std::unique_ptr<TargetMachine> Machine;
-  DataLayout DL;
-};
-
-
 static TargetMachine *unwrap(LLVMTargetMachineRef P) {
-  return P->Machine.get();
+  return reinterpret_cast<TargetMachine *>(P);
 }
 static Target *unwrap(LLVMTargetRef P) {
   return reinterpret_cast<Target*>(P);
 }
 static LLVMTargetMachineRef wrap(const TargetMachine *P) {
-  return new LLVMOpaqueTargetMachine{ std::unique_ptr<TargetMachine>(const_cast<TargetMachine*>(P)),  P->createDataLayout() };
+  return reinterpret_cast<LLVMTargetMachineRef>(const_cast<TargetMachine *>(P));
 }
 static LLVMTargetRef wrap(const Target * P) {
   return reinterpret_cast<LLVMTargetRef>(const_cast<Target*>(P));
@@ -79,16 +68,16 @@ LLVMTargetRef LLVMGetTargetFromName(const char *Name) {
 LLVMBool LLVMGetTargetFromTriple(const char* TripleStr, LLVMTargetRef *T,
                                  char **ErrorMessage) {
   std::string Error;
-  
+
   *T = wrap(TargetRegistry::lookupTarget(TripleStr, Error));
-  
+
   if (!*T) {
     if (ErrorMessage)
       *ErrorMessage = strdup(Error.c_str());
 
     return 1;
   }
-  
+
   return 0;
 }
 
@@ -155,10 +144,7 @@ LLVMTargetMachineRef LLVMCreateTargetMachine(LLVMTargetRef T,
     CM, OL));
 }
 
-
-void LLVMDisposeTargetMachine(LLVMTargetMachineRef T) {
-  delete T;
-}
+void LLVMDisposeTargetMachine(LLVMTargetMachineRef T) { delete unwrap(T); }
 
 LLVMTargetRef LLVMGetTargetMachineTarget(LLVMTargetMachineRef T) {
   const Target* target = &(unwrap(T)->getTarget());
@@ -180,14 +166,13 @@ char* LLVMGetTargetMachineFeatureString(LLVMTargetMachineRef T) {
   return strdup(StringRep.c_str());
 }
 
-/// @deprecated: see "struct LLVMOpaqueTargetMachine" description above
-LLVMTargetDataRef LLVMGetTargetMachineData(LLVMTargetMachineRef T) {
-  return wrap(&T->DL);
-}
-
 void LLVMSetTargetMachineAsmVerbosity(LLVMTargetMachineRef T,
                                       LLVMBool VerboseAsm) {
   unwrap(T)->Options.MCOptions.AsmVerbose = VerboseAsm;
+}
+
+LLVMTargetDataRef LLVMCreateTargetDataLayout(LLVMTargetMachineRef T) {
+  return wrap(new DataLayout(unwrap(T)->createDataLayout()));
 }
 
 static LLVMBool LLVMTargetMachineEmit(LLVMTargetMachineRef T, LLVMModuleRef M,

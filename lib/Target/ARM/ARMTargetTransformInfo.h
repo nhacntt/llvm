@@ -41,7 +41,7 @@ class ARMTTIImpl : public BasicTTIImplBase<ARMTTIImpl> {
   const ARMTargetLowering *getTLI() const { return TLI; }
 
 public:
-  explicit ARMTTIImpl(const ARMBaseTargetMachine *TM, Function &F)
+  explicit ARMTTIImpl(const ARMBaseTargetMachine *TM, const Function &F)
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
         TLI(ST->getTargetLowering()) {}
 
@@ -52,11 +52,22 @@ public:
       : BaseT(std::move(static_cast<BaseT &>(Arg))), ST(std::move(Arg.ST)),
         TLI(std::move(Arg.TLI)) {}
 
+  bool enableInterleavedAccessVectorization() { return true; }
+
+  /// Floating-point computation using ARMv8 AArch32 Advanced
+  /// SIMD instructions remains unchanged from ARMv7. Only AArch64 SIMD
+  /// is IEEE-754 compliant, but it's not covered in this target.
+  bool isFPVectorizationPotentiallyUnsafe() {
+    return !ST->isTargetDarwin();
+  }
+
   /// \name Scalar TTI Implementations
   /// @{
 
   using BaseT::getIntImmCost;
   int getIntImmCost(const APInt &Imm, Type *Ty);
+
+  int getIntImmCost(unsigned Opcode, unsigned Idx, const APInt &Imm, Type *Ty);
 
   /// @}
 

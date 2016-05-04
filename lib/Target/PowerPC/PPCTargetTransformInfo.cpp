@@ -21,6 +21,12 @@ using namespace llvm;
 static cl::opt<bool> DisablePPCConstHoist("disable-ppc-constant-hoisting",
 cl::desc("disable constant hoisting on PPC"), cl::init(false), cl::Hidden);
 
+// This is currently only used for the data prefetch pass which is only enabled
+// for BG/Q by default.
+static cl::opt<unsigned>
+CacheLineSize("ppc-loop-prefetch-cache-line", cl::Hidden, cl::init(64),
+              cl::desc("The loop prefetch cache line size"));
+
 //===----------------------------------------------------------------------===//
 //
 // PPC cost model.
@@ -30,8 +36,9 @@ cl::desc("disable constant hoisting on PPC"), cl::init(false), cl::Hidden);
 TargetTransformInfo::PopcntSupportKind
 PPCTTIImpl::getPopcntSupport(unsigned TyWidth) {
   assert(isPowerOf2_32(TyWidth) && "Ty width must be power of 2");
-  if (ST->hasPOPCNTD() && TyWidth <= 64)
-    return TTI::PSK_FastHardware;
+  if (ST->hasPOPCNTD() != PPCSubtarget::POPCNTD_Unavailable && TyWidth <= 64)
+    return ST->hasPOPCNTD() == PPCSubtarget::POPCNTD_Slow ?
+             TTI::PSK_SlowHardware : TTI::PSK_FastHardware;
   return TTI::PSK_Software;
 }
 
@@ -197,7 +204,18 @@ void PPCTTIImpl::getUnrollingPreferences(Loop *L,
 }
 
 bool PPCTTIImpl::enableAggressiveInterleaving(bool LoopHasReductions) {
+  // On the A2, always unroll aggressively. For QPX unaligned loads, we depend
+  // on combining the loads generated for consecutive accesses, and failure to
+  // do so is particularly expensive. This makes it much more likely (compared
+  // to only using concatenation unrolling).
+  if (ST->getDarwinDirective() == PPC::DIR_A2)
+    return true;
+
   return LoopHasReductions;
+}
+
+bool PPCTTIImpl::enableInterleavedAccessVectorization() {
+  return true;
 }
 
 unsigned PPCTTIImpl::getNumberOfRegisters(bool Vector) {
@@ -217,6 +235,18 @@ unsigned PPCTTIImpl::getRegisterBitWidth(bool Vector) {
     return 64;
   return 32;
 
+}
+
+unsigned PPCTTIImpl::getCacheLineSize() {
+  // This is currently only used for the data prefetch pass which is only
+  // enabled for BG/Q by default.
+  return CacheLineSize;
+}
+
+unsigned PPCTTIImpl::getPrefetchDistance() {
+  // This seems like a reasonable default for the BG/Q (this pass is enabled, by
+  // default, only on the BG/Q).
+  return 300;
 }
 
 unsigned PPCTTIImpl::getMaxInterleaveFactor(unsigned VF) {
@@ -259,7 +289,15 @@ int PPCTTIImpl::getArithmeticInstrCost(
 
 int PPCTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
                                Type *SubTp) {
-  return BaseT::getShuffleCost(Kind, Tp, Index, SubTp);
+  // Legalize the type.
+  std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, Tp);
+
+  // PPC, for both Altivec/VSX and QPX, support cheap arbitrary permutations
+  // (at least in the sense that there need only be one non-loop-invariant
+  // instruction). We need one such shuffle instruction for each actual
+  // register (this is not true for arbitrary shuffles, but is true for the
+  // structured types of shuffles covered by TTI::ShuffleKind).
+  return LT.first;
 }
 
 int PPCTTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src) {
@@ -320,31 +358,74 @@ int PPCTTIImpl::getMemoryOpCost(unsigned Opcode, Type *Src, unsigned Alignment,
 
   int Cost = BaseT::getMemoryOpCost(Opcode, Src, Alignment, AddressSpace);
 
-  // VSX loads/stores support unaligned access.
-  if (ST->hasVSX()) {
-    if (LT.second == MVT::v2f64 || LT.second == MVT::v2i64)
-      return Cost;
-  }
+  // Aligned loads and stores are easy.
+  unsigned SrcBytes = LT.second.getStoreSize();
+  if (!SrcBytes || !Alignment || Alignment >= SrcBytes)
+    return Cost;
 
-  bool UnalignedAltivec =
-    Src->isVectorTy() &&
-    Src->getPrimitiveSizeInBits() >= LT.second.getSizeInBits() &&
-    LT.second.getSizeInBits() == 128 &&
-    Opcode == Instruction::Load;
+  bool IsAltivecType = ST->hasAltivec() &&
+                       (LT.second == MVT::v16i8 || LT.second == MVT::v8i16 ||
+                        LT.second == MVT::v4i32 || LT.second == MVT::v4f32);
+  bool IsVSXType = ST->hasVSX() &&
+                   (LT.second == MVT::v2f64 || LT.second == MVT::v2i64);
+  bool IsQPXType = ST->hasQPX() &&
+                   (LT.second == MVT::v4f64 || LT.second == MVT::v4f32);
+
+  // If we can use the permutation-based load sequence, then this is also
+  // relatively cheap (not counting loop-invariant instructions): one load plus
+  // one permute (the last load in a series has extra cost, but we're
+  // neglecting that here). Note that on the P7, we could do unaligned loads
+  // for Altivec types using the VSX instructions, but that's more expensive
+  // than using the permutation-based load sequence. On the P8, that's no
+  // longer true.
+  if (Opcode == Instruction::Load &&
+      ((!ST->hasP8Vector() && IsAltivecType) || IsQPXType) &&
+      Alignment >= LT.second.getScalarType().getStoreSize())
+    return Cost + LT.first; // Add the cost of the permutations.
+
+  // For VSX, we can do unaligned loads and stores on Altivec/VSX types. On the
+  // P7, unaligned vector loads are more expensive than the permutation-based
+  // load sequence, so that might be used instead, but regardless, the net cost
+  // is about the same (not counting loop-invariant instructions).
+  if (IsVSXType || (ST->hasVSX() && IsAltivecType))
+    return Cost;
 
   // PPC in general does not support unaligned loads and stores. They'll need
   // to be decomposed based on the alignment factor.
-  unsigned SrcBytes = LT.second.getStoreSize();
-  if (SrcBytes && Alignment && Alignment < SrcBytes && !UnalignedAltivec) {
-    Cost += LT.first*(SrcBytes/Alignment-1);
 
-    // For a vector type, there is also scalarization overhead (only for
-    // stores, loads are expanded using the vector-load + permutation sequence,
-    // which is much less expensive).
-    if (Src->isVectorTy() && Opcode == Instruction::Store)
-      for (int i = 0, e = Src->getVectorNumElements(); i < e; ++i)
-        Cost += getVectorInstrCost(Instruction::ExtractElement, Src, i);
-  }
+  // Add the cost of each scalar load or store.
+  Cost += LT.first*(SrcBytes/Alignment-1);
+
+  // For a vector type, there is also scalarization overhead (only for
+  // stores, loads are expanded using the vector-load + permutation sequence,
+  // which is much less expensive).
+  if (Src->isVectorTy() && Opcode == Instruction::Store)
+    for (int i = 0, e = Src->getVectorNumElements(); i < e; ++i)
+      Cost += getVectorInstrCost(Instruction::ExtractElement, Src, i);
+
+  return Cost;
+}
+
+int PPCTTIImpl::getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
+                                           unsigned Factor,
+                                           ArrayRef<unsigned> Indices,
+                                           unsigned Alignment,
+                                           unsigned AddressSpace) {
+  assert(isa<VectorType>(VecTy) &&
+         "Expect a vector type for interleaved memory op");
+
+  // Legalize the type.
+  std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, VecTy);
+
+  // Firstly, the cost of load/store operation.
+  int Cost = getMemoryOpCost(Opcode, VecTy, Alignment, AddressSpace);
+
+  // PPC, for both Altivec/VSX and QPX, support cheap arbitrary permutations
+  // (at least in the sense that there need only be one non-loop-invariant
+  // instruction). For each result vector, we need one shuffle per incoming
+  // vector (except that the first shuffle can take two incoming vectors
+  // because it does not need to take itself).
+  Cost += Factor*(LT.first-1);
 
   return Cost;
 }

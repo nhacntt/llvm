@@ -45,7 +45,6 @@ class TargetIntrinsicInfo;
 class TargetLowering;
 class TargetPassConfig;
 class TargetRegisterInfo;
-class TargetSelectionDAGInfo;
 class TargetSubtargetInfo;
 class TargetTransformInfo;
 class formatted_raw_ostream;
@@ -102,6 +101,7 @@ protected: // Can only create subclasses.
   const MCSubtargetInfo *STI;
 
   unsigned RequireStructuredCFG : 1;
+  unsigned O0WantsFastISel : 1;
 
 public:
   mutable TargetOptions Options;
@@ -185,6 +185,8 @@ public:
   void setOptLevel(CodeGenOpt::Level Level) const;
 
   void setFastISel(bool Enable) { Options.EnableFastISel = Enable; }
+  bool getO0WantsFastISel() { return O0WantsFastISel; }
+  void setO0WantsFastISel(bool Enable) { O0WantsFastISel = Enable; }
 
   bool shouldPrintMachineCode() const { return Options.PrintMachineCode; }
 
@@ -214,6 +216,11 @@ public:
   /// set up appropriately for this target machine. Even the old pass manager
   /// uses this to answer queries about the IR.
   virtual TargetIRAnalysis getTargetIRAnalysis();
+
+  /// Add target-specific function passes that should be run as early as
+  /// possible in the optimization pipeline.  Most TargetMachines have no such
+  /// passes.
+  virtual void addEarlyAsPossiblePasses(PassManagerBase &) {}
 
   /// These enums are meant to be passed into addPassesToEmitFile to indicate
   /// what type of file to emit, and returned by it to indicate what type of
@@ -246,6 +253,13 @@ public:
                                  bool /*DisableVerify*/ = true) {
     return true;
   }
+
+  /// True if subtarget inserts the final scheduling pass on its own.
+  ///
+  /// Branch relaxation, which must happen after block placement, can
+  /// on some targets (e.g. SystemZ) expose additional post-RA
+  /// scheduling opportunities.
+  virtual bool targetSchedulesPostRAScheduling() const { return false; };
 
   void getNameWithPrefix(SmallVectorImpl<char> &Name, const GlobalValue *GV,
                          Mangler &Mang, bool MayAlwaysUsePrivate = false) const;

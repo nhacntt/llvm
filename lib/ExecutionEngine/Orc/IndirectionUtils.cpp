@@ -13,11 +13,13 @@
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include <set>
 #include <sstream>
 
 namespace llvm {
 namespace orc {
+
+void JITCompileCallbackManager::anchor() {}
+void IndirectStubsManager::anchor() {}
 
 Constant* createIRTypedAddress(FunctionType &FT, TargetAddress Addr) {
   Constant *AddrIntVal =
@@ -37,7 +39,7 @@ GlobalVariable* createImplPointer(PointerType &PT, Module &M,
   return IP;
 }
 
-void makeStub(Function &F, GlobalVariable &ImplPointer) {
+void makeStub(Function &F, Value &ImplPointer) {
   assert(F.isDeclaration() && "Can't turn a definition into a stub.");
   assert(F.getParent() && "Function isn't in a module.");
   Module &M = *F.getParent();
@@ -61,9 +63,7 @@ class GlobalRenamer {
 public:
 
   static bool needsRenaming(const Value &New) {
-    if (!New.hasName() || New.getName().startswith("\01L"))
-      return true;
-    return false;
+    return !New.hasName() || New.getName().startswith("\01L");
   }
 
   const std::string& getRename(const Value &Orig) {
@@ -106,13 +106,16 @@ void makeAllSymbolsExternallyAccessible(Module &M) {
 
   for (auto &GV : M.globals())
     raiseVisibilityOnValue(GV, Renamer);
+
+  for (auto &A : M.aliases())
+    raiseVisibilityOnValue(A, Renamer);
 }
 
 Function* cloneFunctionDecl(Module &Dst, const Function &F,
                             ValueToValueMapTy *VMap) {
   assert(F.getParent() != &Dst && "Can't copy decl over existing function.");
   Function *NewF =
-    Function::Create(cast<FunctionType>(F.getType()->getElementType()),
+    Function::Create(cast<FunctionType>(F.getValueType()),
                      F.getLinkage(), F.getName(), &Dst);
   NewF->copyAttributesFrom(&F);
 
@@ -121,7 +124,7 @@ Function* cloneFunctionDecl(Module &Dst, const Function &F,
     auto NewArgI = NewF->arg_begin();
     for (auto ArgI = F.arg_begin(), ArgE = F.arg_end(); ArgI != ArgE;
          ++ArgI, ++NewArgI)
-      (*VMap)[ArgI] = NewArgI;
+      (*VMap)[&*ArgI] = &*NewArgI;
   }
 
   return NewF;
@@ -150,7 +153,7 @@ GlobalVariable* cloneGlobalVariableDecl(Module &Dst, const GlobalVariable &GV,
                                         ValueToValueMapTy *VMap) {
   assert(GV.getParent() != &Dst && "Can't copy decl over existing global var.");
   GlobalVariable *NewGV = new GlobalVariable(
-      Dst, GV.getType()->getElementType(), GV.isConstant(),
+      Dst, GV.getValueType(), GV.isConstant(),
       GV.getLinkage(), nullptr, GV.getName(), nullptr,
       GV.getThreadLocalMode(), GV.getType()->getAddressSpace());
   NewGV->copyAttributesFrom(&GV);
@@ -175,6 +178,17 @@ void moveGlobalVariableInitializer(GlobalVariable &OrigGV,
 
   NewGV->setInitializer(MapValue(OrigGV.getInitializer(), VMap, RF_None,
                                  nullptr, Materializer));
+}
+
+GlobalAlias* cloneGlobalAliasDecl(Module &Dst, const GlobalAlias &OrigA,
+                                  ValueToValueMapTy &VMap) {
+  assert(OrigA.getAliasee() && "Original alias doesn't have an aliasee?");
+  auto *NewA = GlobalAlias::create(OrigA.getValueType(),
+                                   OrigA.getType()->getPointerAddressSpace(),
+                                   OrigA.getLinkage(), OrigA.getName(), &Dst);
+  NewA->copyAttributesFrom(&OrigA);
+  VMap[&OrigA] = NewA;
+  return NewA;
 }
 
 } // End namespace orc.

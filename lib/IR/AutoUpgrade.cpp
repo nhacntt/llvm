@@ -27,6 +27,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Regex.h"
 #include <cstring>
 using namespace llvm;
 
@@ -92,8 +93,46 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
                                         F->arg_begin()->getType());
       return true;
     }
+    Regex vldRegex("^arm\\.neon\\.vld([1234]|[234]lane)\\.v[a-z0-9]*$");
+    if (vldRegex.match(Name)) {
+      auto fArgs = F->getFunctionType()->params();
+      SmallVector<Type *, 4> Tys(fArgs.begin(), fArgs.end());
+      // Can't use Intrinsic::getDeclaration here as the return types might
+      // then only be structurally equal.
+      FunctionType* fType = FunctionType::get(F->getReturnType(), Tys, false);
+      NewFn = Function::Create(fType, F->getLinkage(),
+                               "llvm." + Name + ".p0i8", F->getParent());
+      return true;
+    }
+    Regex vstRegex("^arm\\.neon\\.vst([1234]|[234]lane)\\.v[a-z0-9]*$");
+    if (vstRegex.match(Name)) {
+      static const Intrinsic::ID StoreInts[] = {Intrinsic::arm_neon_vst1,
+                                                Intrinsic::arm_neon_vst2,
+                                                Intrinsic::arm_neon_vst3,
+                                                Intrinsic::arm_neon_vst4};
+
+      static const Intrinsic::ID StoreLaneInts[] = {
+        Intrinsic::arm_neon_vst2lane, Intrinsic::arm_neon_vst3lane,
+        Intrinsic::arm_neon_vst4lane
+      };
+
+      auto fArgs = F->getFunctionType()->params();
+      Type *Tys[] = {fArgs[0], fArgs[1]};
+      if (Name.find("lane") == StringRef::npos)
+        NewFn = Intrinsic::getDeclaration(F->getParent(),
+                                          StoreInts[fArgs.size() - 3], Tys);
+      else
+        NewFn = Intrinsic::getDeclaration(F->getParent(),
+                                          StoreLaneInts[fArgs.size() - 5], Tys);
+      return true;
+    }
+    if (Name == "aarch64.thread.pointer" || Name == "arm.thread.pointer") {
+      NewFn = Intrinsic::getDeclaration(F->getParent(), Intrinsic::thread_pointer);
+      return true;
+    }
     break;
   }
+
   case 'c': {
     if (Name.startswith("ctlz.") && F->arg_size() == 1) {
       F->setName(Name + ".old");
@@ -124,12 +163,21 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
     }
     break;
 
+  case 's':
+    if (Name == "stackprotectorcheck") {
+      NewFn = nullptr;
+      return true;
+    }
+
   case 'x': {
     if (Name.startswith("x86.sse2.pcmpeq.") ||
         Name.startswith("x86.sse2.pcmpgt.") ||
         Name.startswith("x86.avx2.pcmpeq.") ||
         Name.startswith("x86.avx2.pcmpgt.") ||
+        Name.startswith("x86.avx2.vbroadcast") ||
+        Name.startswith("x86.avx2.pbroadcast") ||
         Name.startswith("x86.avx.vpermil.") ||
+        Name.startswith("x86.sse41.pmovsx") ||
         Name == "x86.avx.vinsertf128.pd.256" ||
         Name == "x86.avx.vinsertf128.ps.256" ||
         Name == "x86.avx.vinsertf128.si.256" ||
@@ -162,6 +210,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
         Name == "x86.avx2.pblendd.128" ||
         Name == "x86.avx2.pblendd.256" ||
         Name == "x86.avx2.vbroadcasti128" ||
+        Name == "x86.xop.vpcmov" ||
         (Name.startswith("x86.xop.vpcom") && F->arg_size() == 2)) {
       NewFn = nullptr;
       return true;
@@ -325,7 +374,7 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
   Function *F = CI->getCalledFunction();
   LLVMContext &C = CI->getContext();
   IRBuilder<> Builder(C);
-  Builder.SetInsertPoint(CI->getParent(), CI);
+  Builder.SetInsertPoint(CI->getParent(), CI->getIterator());
 
   assert(F && "Intrinsic call is not direct?");
 
@@ -351,7 +400,7 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
                Name == "llvm.x86.avx.movnt.ps.256" ||
                Name == "llvm.x86.avx.movnt.pd.256") {
       IRBuilder<> Builder(C);
-      Builder.SetInsertPoint(CI->getParent(), CI);
+      Builder.SetInsertPoint(CI->getParent(), CI->getIterator());
 
       Module *M = F->getParent();
       SmallVector<Metadata *, 1> Elts;
@@ -368,7 +417,7 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
                                         "cast");
       StoreInst *SI = Builder.CreateStore(Arg1, BC);
       SI->setMetadata(M->getMDKindID("nontemporal"), Node);
-      SI->setAlignment(16);
+      SI->setAlignment(32);
 
       // Remove intrinsic.
       CI->eraseFromParent();
@@ -419,6 +468,16 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       Rep =
           Builder.CreateCall(VPCOM, {CI->getArgOperand(0), CI->getArgOperand(1),
                                      Builder.getInt8(Imm)});
+    } else if (Name == "llvm.x86.xop.vpcmov") {
+      Value *Arg0 = CI->getArgOperand(0);
+      Value *Arg1 = CI->getArgOperand(1);
+      Value *Sel = CI->getArgOperand(2);
+      unsigned NumElts = CI->getType()->getVectorNumElements();
+      Constant *MinusOne = ConstantVector::getSplat(NumElts, Builder.getInt64(-1));
+      Value *NotSel = Builder.CreateXor(Sel, MinusOne);
+      Value *Sel0 = Builder.CreateAnd(Arg0, Sel);
+      Value *Sel1 = Builder.CreateAnd(Arg1, NotSel);
+      Rep = Builder.CreateOr(Sel0, Sel1);
     } else if (Name == "llvm.x86.sse42.crc32.64.8") {
       Function *CRC32 = Intrinsic::getDeclaration(F->getParent(),
                                                Intrinsic::x86_sse42_crc32_32_8);
@@ -438,6 +497,19 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       for (unsigned I = 0; I < EltNum; ++I)
         Rep = Builder.CreateInsertElement(Rep, Load,
                                           ConstantInt::get(I32Ty, I));
+    } else if (Name.startswith("llvm.x86.sse41.pmovsx")) {
+      VectorType *SrcTy = cast<VectorType>(CI->getArgOperand(0)->getType());
+      VectorType *DstTy = cast<VectorType>(CI->getType());
+      unsigned NumDstElts = DstTy->getNumElements();
+
+      // Extract a subvector of the first NumDstElts lanes and sign extend.
+      SmallVector<int, 8> ShuffleMask;
+      for (int i = 0; i != (int)NumDstElts; ++i)
+        ShuffleMask.push_back(i);
+
+      Value *SV = Builder.CreateShuffleVector(
+          CI->getArgOperand(0), UndefValue::get(SrcTy), ShuffleMask);
+      Rep = Builder.CreateSExt(SV, DstTy);
     } else if (Name == "llvm.x86.avx2.vbroadcasti128") {
       // Replace vbroadcasts with a vector shuffle.
       Type *VT = VectorType::get(Type::getInt64Ty(C), 2);
@@ -447,6 +519,14 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       const int Idxs[4] = { 0, 1, 0, 1 };
       Rep = Builder.CreateShuffleVector(Load, UndefValue::get(Load->getType()),
                                         Idxs);
+    } else if (Name.startswith("llvm.x86.avx2.pbroadcast") ||
+               Name.startswith("llvm.x86.avx2.vbroadcast")) {
+      // Replace vp?broadcasts with a vector shuffle.
+      Value *Op = CI->getArgOperand(0);
+      unsigned NumElts = CI->getType()->getVectorNumElements();
+      Type *MaskTy = VectorType::get(Type::getInt32Ty(C), NumElts);
+      Rep = Builder.CreateShuffleVector(Op, UndefValue::get(Op->getType()),
+                                        Constant::getNullValue(MaskTy));
     } else if (Name == "llvm.x86.sse2.psll.dq") {
       // 128-bit shift left specified in bits.
       unsigned Shift = cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue();
@@ -517,10 +597,10 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       unsigned Imm = cast<ConstantInt>(CI->getArgOperand(2))->getZExtValue();
       VectorType *VecTy = cast<VectorType>(CI->getType());
       unsigned NumElts = VecTy->getNumElements();
-      
+
       // Mask off the high bits of the immediate value; hardware ignores those.
       Imm = Imm & 1;
-      
+
       // Extend the second operand into a vector that is twice as big.
       Value *UndefV = UndefValue::get(Op1->getType());
       SmallVector<Constant*, 8> Idxs;
@@ -562,7 +642,7 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       unsigned Imm = cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue();
       VectorType *VecTy = cast<VectorType>(CI->getType());
       unsigned NumElts = VecTy->getNumElements();
-      
+
       // Mask off the high bits of the immediate value; hardware ignores those.
       Imm = Imm & 1;
 
@@ -575,6 +655,8 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
 
       Value *UndefV = UndefValue::get(Op0->getType());
       Rep = Builder.CreateShuffleVector(Op0, UndefV, ConstantVector::get(Idxs));
+    } else if (Name == "llvm.stackprotectorcheck") {
+      Rep = nullptr;
     } else {
       bool PD128 = false, PD256 = false, PS128 = false, PS256 = false;
       if (Name == "llvm.x86.avx.vpermil.pd.256")
@@ -614,7 +696,8 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       }
     }
 
-    CI->replaceAllUsesWith(Rep);
+    if (Rep)
+      CI->replaceAllUsesWith(Rep);
     CI->eraseFromParent();
     return;
   }
@@ -626,6 +709,27 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
   switch (NewFn->getIntrinsicID()) {
   default:
     llvm_unreachable("Unknown function for CallInst upgrade.");
+
+  case Intrinsic::arm_neon_vld1:
+  case Intrinsic::arm_neon_vld2:
+  case Intrinsic::arm_neon_vld3:
+  case Intrinsic::arm_neon_vld4:
+  case Intrinsic::arm_neon_vld2lane:
+  case Intrinsic::arm_neon_vld3lane:
+  case Intrinsic::arm_neon_vld4lane:
+  case Intrinsic::arm_neon_vst1:
+  case Intrinsic::arm_neon_vst2:
+  case Intrinsic::arm_neon_vst3:
+  case Intrinsic::arm_neon_vst4:
+  case Intrinsic::arm_neon_vst2lane:
+  case Intrinsic::arm_neon_vst3lane:
+  case Intrinsic::arm_neon_vst4lane: {
+    SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
+                                 CI->arg_operands().end());
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, Args));
+    CI->eraseFromParent();
+    return;
+  }
 
   case Intrinsic::ctlz:
   case Intrinsic::cttz:
@@ -699,24 +803,28 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     CI->eraseFromParent();
     return;
   }
+
+  case Intrinsic::thread_pointer: {
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, {}));
+    CI->eraseFromParent();
+    return;
+  }
   }
 }
 
-// This tests each Function to determine if it needs upgrading. When we find
-// one we are interested in, we then upgrade all calls to reflect the new
-// function.
-void llvm::UpgradeCallsToIntrinsic(Function* F) {
+void llvm::UpgradeCallsToIntrinsic(Function *F) {
   assert(F && "Illegal attempt to upgrade a non-existent intrinsic.");
 
-  // Upgrade the function and check if it is a totaly new function.
+  // Check if this function should be upgraded and get the replacement function
+  // if there is one.
   Function *NewFn;
   if (UpgradeIntrinsicFunction(F, NewFn)) {
-    // Replace all uses to the old function with the new one if necessary.
-    for (Value::user_iterator UI = F->user_begin(), UE = F->user_end();
-         UI != UE;) {
+    // Replace all users of the old function with the new function or new
+    // instructions. This is not a range loop because the call is deleted.
+    for (auto UI = F->user_begin(), UE = F->user_end(); UI != UE; )
       if (CallInst *CI = dyn_cast<CallInst>(*UI++))
         UpgradeIntrinsicCall(CI, NewFn);
-    }
+
     // Remove old function, no longer used, from the module.
     F->eraseFromParent();
   }
@@ -803,11 +911,64 @@ bool llvm::UpgradeDebugInfo(Module &M) {
   return RetCode;
 }
 
-void llvm::UpgradeMDStringConstant(std::string &String) {
-  const std::string OldPrefix = "llvm.vectorizer.";
-  if (String == "llvm.vectorizer.unroll") {
-    String = "llvm.loop.interleave.count";
-  } else if (String.find(OldPrefix) == 0) {
-    String.replace(0, OldPrefix.size(), "llvm.loop.vectorize.");
-  }
+static bool isOldLoopArgument(Metadata *MD) {
+  auto *T = dyn_cast_or_null<MDTuple>(MD);
+  if (!T)
+    return false;
+  if (T->getNumOperands() < 1)
+    return false;
+  auto *S = dyn_cast_or_null<MDString>(T->getOperand(0));
+  if (!S)
+    return false;
+  return S->getString().startswith("llvm.vectorizer.");
+}
+
+static MDString *upgradeLoopTag(LLVMContext &C, StringRef OldTag) {
+  StringRef OldPrefix = "llvm.vectorizer.";
+  assert(OldTag.startswith(OldPrefix) && "Expected old prefix");
+
+  if (OldTag == "llvm.vectorizer.unroll")
+    return MDString::get(C, "llvm.loop.interleave.count");
+
+  return MDString::get(
+      C, (Twine("llvm.loop.vectorize.") + OldTag.drop_front(OldPrefix.size()))
+             .str());
+}
+
+static Metadata *upgradeLoopArgument(Metadata *MD) {
+  auto *T = dyn_cast_or_null<MDTuple>(MD);
+  if (!T)
+    return MD;
+  if (T->getNumOperands() < 1)
+    return MD;
+  auto *OldTag = dyn_cast_or_null<MDString>(T->getOperand(0));
+  if (!OldTag)
+    return MD;
+  if (!OldTag->getString().startswith("llvm.vectorizer."))
+    return MD;
+
+  // This has an old tag.  Upgrade it.
+  SmallVector<Metadata *, 8> Ops;
+  Ops.reserve(T->getNumOperands());
+  Ops.push_back(upgradeLoopTag(T->getContext(), OldTag->getString()));
+  for (unsigned I = 1, E = T->getNumOperands(); I != E; ++I)
+    Ops.push_back(T->getOperand(I));
+
+  return MDTuple::get(T->getContext(), Ops);
+}
+
+MDNode *llvm::upgradeInstructionLoopAttachment(MDNode &N) {
+  auto *T = dyn_cast<MDTuple>(&N);
+  if (!T)
+    return &N;
+
+  if (!llvm::any_of(T->operands(), isOldLoopArgument))
+    return &N;
+
+  SmallVector<Metadata *, 8> Ops;
+  Ops.reserve(T->getNumOperands());
+  for (Metadata *MD : T->operands())
+    Ops.push_back(upgradeLoopArgument(MD));
+
+  return MDTuple::get(T->getContext(), Ops);
 }

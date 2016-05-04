@@ -1,4 +1,4 @@
-//===---- DemandedBits.cpp - Determine demanded bits -----------------------===//
+//===---- DemandedBits.cpp - Determine demanded bits ----------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -20,11 +20,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/DemandedBits.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/BasicBlock.h"
@@ -43,24 +42,27 @@ using namespace llvm;
 
 #define DEBUG_TYPE "demanded-bits"
 
-char DemandedBits::ID = 0;
-INITIALIZE_PASS_BEGIN(DemandedBits, "demanded-bits", "Demanded bits analysis",
-                      false, false)
+char DemandedBitsWrapperPass::ID = 0;
+INITIALIZE_PASS_BEGIN(DemandedBitsWrapperPass, "demanded-bits",
+                      "Demanded bits analysis", false, false)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_PASS_END(DemandedBits, "demanded-bits", "Demanded bits analysis",
-			false, false)
+INITIALIZE_PASS_END(DemandedBitsWrapperPass, "demanded-bits",
+                    "Demanded bits analysis", false, false)
 
-DemandedBits::DemandedBits() : FunctionPass(ID) {
-  initializeDemandedBitsPass(*PassRegistry::getPassRegistry());
+DemandedBitsWrapperPass::DemandedBitsWrapperPass() : FunctionPass(ID) {
+  initializeDemandedBitsWrapperPassPass(*PassRegistry::getPassRegistry());
 }
 
-
-void DemandedBits::getAnalysisUsage(AnalysisUsage& AU) const {
+void DemandedBitsWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesCFG();
   AU.addRequired<AssumptionCacheTracker>();
   AU.addRequired<DominatorTreeWrapperPass>();
   AU.setPreservesAll();
+}
+
+void DemandedBitsWrapperPass::print(raw_ostream &OS, const Module *M) const {
+  DB->print(OS);
 }
 
 static bool isAlwaysLive(Instruction *I) {
@@ -68,12 +70,10 @@ static bool isAlwaysLive(Instruction *I) {
       I->isEHPad() || I->mayHaveSideEffects();
 }
 
-void
-DemandedBits::determineLiveOperandBits(const Instruction *UserI,
-				       const Instruction *I, unsigned OperandNo,
-				       const APInt &AOut, APInt &AB,
-				       APInt &KnownZero, APInt &KnownOne,
-				       APInt &KnownZero2, APInt &KnownOne2) {
+void DemandedBits::determineLiveOperandBits(
+    const Instruction *UserI, const Instruction *I, unsigned OperandNo,
+    const APInt &AOut, APInt &AB, APInt &KnownZero, APInt &KnownOne,
+    APInt &KnownZero2, APInt &KnownOne2) {
   unsigned BitWidth = AB.getBitWidth();
 
   // We're called once per operand, but for some instructions, we need to
@@ -88,13 +88,13 @@ DemandedBits::determineLiveOperandBits(const Instruction *UserI,
         KnownZero = APInt(BitWidth, 0);
         KnownOne = APInt(BitWidth, 0);
         computeKnownBits(const_cast<Value *>(V1), KnownZero, KnownOne, DL, 0,
-                         AC, UserI, DT);
+                         &AC, UserI, &DT);
 
         if (V2) {
           KnownZero2 = APInt(BitWidth, 0);
           KnownOne2 = APInt(BitWidth, 0);
           computeKnownBits(const_cast<Value *>(V2), KnownZero2, KnownOne2, DL,
-                           0, AC, UserI, DT);
+                           0, &AC, UserI, &DT);
         }
       };
 
@@ -134,6 +134,7 @@ DemandedBits::determineLiveOperandBits(const Instruction *UserI,
     break;
   case Instruction::Add:
   case Instruction::Sub:
+  case Instruction::Mul:
     // Find the highest live output bit. We don't need any more input
     // bits than that (adds, and thus subtracts, ripple only to the
     // left).
@@ -246,10 +247,23 @@ DemandedBits::determineLiveOperandBits(const Instruction *UserI,
   }
 }
 
-bool DemandedBits::runOnFunction(Function& F) {
-  AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
-  DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+bool DemandedBitsWrapperPass::runOnFunction(Function &F) {
+  auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
+  auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+  DB.emplace(F, AC, DT);
+  return false;
+}
 
+void DemandedBitsWrapperPass::releaseMemory() {
+  DB.reset();
+}
+
+void DemandedBits::performAnalysis() {
+  if (Analyzed)
+    // Analysis already completed for this function.
+    return;
+  Analyzed = true;
+  
   Visited.clear();
   AliveBits.clear();
 
@@ -316,7 +330,7 @@ bool DemandedBits::runOnFunction(Function& F) {
               !isAlwaysLive(UserI)) {
             AB = APInt(BitWidth, 0);
           } else {
-            // If all bits of the output are dead, then all bits of the input 
+            // If all bits of the output are dead, then all bits of the input
             // Bits of each operand that are used to compute alive bits of the
             // output are alive, all others are dead.
             determineLiveOperandBits(UserI, I, OI.getOperandNo(), AOut, AB,
@@ -343,11 +357,11 @@ bool DemandedBits::runOnFunction(Function& F) {
       }
     }
   }
-
-  return false;
 }
 
 APInt DemandedBits::getDemandedBits(Instruction *I) {
+  performAnalysis();
+  
   const DataLayout &DL = I->getParent()->getModule()->getDataLayout();
   if (AliveBits.count(I))
     return AliveBits[I];
@@ -355,10 +369,35 @@ APInt DemandedBits::getDemandedBits(Instruction *I) {
 }
 
 bool DemandedBits::isInstructionDead(Instruction *I) {
+  performAnalysis();
+
   return !Visited.count(I) && AliveBits.find(I) == AliveBits.end() &&
     !isAlwaysLive(I);
 }
 
-FunctionPass *llvm::createDemandedBitsPass() {
-  return new DemandedBits();
+void DemandedBits::print(raw_ostream &OS) {
+  performAnalysis();
+  for (auto &KV : AliveBits) {
+    OS << "DemandedBits: 0x" << utohexstr(KV.second.getLimitedValue()) << " for "
+       << *KV.first << "\n";
+  }
+}
+
+FunctionPass *llvm::createDemandedBitsWrapperPass() {
+  return new DemandedBitsWrapperPass();
+}
+
+char DemandedBitsAnalysis::PassID;
+
+DemandedBits DemandedBitsAnalysis::run(Function &F,
+                                             AnalysisManager<Function> &AM) {
+  auto &AC = AM.getResult<AssumptionAnalysis>(F);
+  auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
+  return DemandedBits(F, AC, DT);
+}
+
+PreservedAnalyses DemandedBitsPrinterPass::run(Function &F,
+                                               FunctionAnalysisManager &AM) {
+  AM.getResult<DemandedBitsAnalysis>(F).print(OS);
+  return PreservedAnalyses::all();
 }

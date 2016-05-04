@@ -37,7 +37,7 @@ class PPCTTIImpl : public BasicTTIImplBase<PPCTTIImpl> {
   const PPCTargetLowering *getTLI() const { return TLI; }
 
 public:
-  explicit PPCTTIImpl(const PPCTargetMachine *TM, Function &F)
+  explicit PPCTTIImpl(const PPCTargetMachine *TM, const Function &F)
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
         TLI(ST->getTargetLowering()) {}
 
@@ -67,8 +67,11 @@ public:
   /// @{
 
   bool enableAggressiveInterleaving(bool LoopHasReductions);
+  bool enableInterleavedAccessVectorization();
   unsigned getNumberOfRegisters(bool Vector);
   unsigned getRegisterBitWidth(bool Vector);
+  unsigned getCacheLineSize();
+  unsigned getPrefetchDistance();
   unsigned getMaxInterleaveFactor(unsigned VF);
   int getArithmeticInstrCost(
       unsigned Opcode, Type *Ty,
@@ -82,6 +85,11 @@ public:
   int getVectorInstrCost(unsigned Opcode, Type *Val, unsigned Index);
   int getMemoryOpCost(unsigned Opcode, Type *Src, unsigned Alignment,
                       unsigned AddressSpace);
+  int getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
+                                 unsigned Factor,
+                                 ArrayRef<unsigned> Indices,
+                                 unsigned Alignment,
+                                 unsigned AddressSpace);
 
   /// @}
 };

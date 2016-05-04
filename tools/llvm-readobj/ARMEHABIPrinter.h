@@ -11,7 +11,7 @@
 #define LLVM_TOOLS_LLVM_READOBJ_ARMEHABIPRINTER_H
 
 #include "Error.h"
-#include "StreamWriter.h"
+#include "llvm-readobj.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Object/ELFTypes.h"
@@ -19,6 +19,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/type_traits.h"
 
 namespace llvm {
@@ -26,7 +27,7 @@ namespace ARM {
 namespace EHABI {
 
 class OpcodeDecoder {
-  StreamWriter &SW;
+  ScopedPrinter &SW;
   raw_ostream &OS;
 
   struct RingEntry {
@@ -63,7 +64,7 @@ class OpcodeDecoder {
   void PrintRegisters(uint32_t Mask, StringRef Prefix);
 
 public:
-  OpcodeDecoder(StreamWriter &SW) : SW(SW), OS(SW.getOStream()) {}
+  OpcodeDecoder(ScopedPrinter &SW) : SW(SW), OS(SW.getOStream()) {}
   void Decode(const uint8_t *Opcodes, off_t Offset, size_t Length);
 };
 
@@ -310,7 +311,7 @@ class PrinterContext {
   typedef typename object::ELFFile<ET>::Elf_Rel Elf_Rel;
   typedef typename object::ELFFile<ET>::Elf_Word Elf_Word;
 
-  StreamWriter &SW;
+  ScopedPrinter &SW;
   const object::ELFFile<ET> *ELF;
   const Elf_Shdr *Symtab;
   ArrayRef<Elf_Word> ShndxTable;
@@ -334,7 +335,7 @@ class PrinterContext {
   void PrintOpcodes(const uint8_t *Entry, size_t Length, off_t Offset) const;
 
 public:
-  PrinterContext(StreamWriter &SW, const object::ELFFile<ET> *ELF,
+  PrinterContext(ScopedPrinter &SW, const object::ELFFile<ET> *ELF,
                  const Elf_Shdr *Symtab)
       : SW(SW), ELF(ELF), Symtab(Symtab) {}
 
@@ -354,8 +355,15 @@ PrinterContext<ET>::FunctionAtAddress(unsigned Section,
 
   for (const Elf_Sym &Sym : ELF->symbols(Symtab))
     if (Sym.st_shndx == Section && Sym.st_value == Address &&
-        Sym.getType() == ELF::STT_FUNC)
-      return Sym.getName(StrTable);
+        Sym.getType() == ELF::STT_FUNC) {
+      auto NameOrErr = Sym.getName(StrTable);
+      if (!NameOrErr) {
+        // TODO: Actually report errors helpfully.
+        consumeError(NameOrErr.takeError());
+        return readobj_error::unknown_symbol;
+      }
+      return *NameOrErr;
+    }
   return readobj_error::unknown_symbol;
 }
 
@@ -375,6 +383,10 @@ PrinterContext<ET>::FindExceptionTable(unsigned IndexSectionIndex,
     if (Sec.sh_type != ELF::SHT_REL || Sec.sh_info != IndexSectionIndex)
       continue;
 
+    ErrorOr<const Elf_Shdr *> SymTabOrErr = ELF->getSection(Sec.sh_link);
+    error(SymTabOrErr.getError());
+    const Elf_Shdr *SymTab = *SymTabOrErr;
+
     for (const Elf_Rel &R : ELF->rels(&Sec)) {
       if (R.r_offset != static_cast<unsigned>(IndexTableOffset))
         continue;
@@ -384,11 +396,10 @@ PrinterContext<ET>::FindExceptionTable(unsigned IndexSectionIndex,
       RelA.r_info = R.r_info;
       RelA.r_addend = 0;
 
-      std::pair<const Elf_Shdr *, const Elf_Sym *> Symbol =
-        ELF->getRelocationSymbol(&Sec, &RelA);
+      const Elf_Sym *Symbol = ELF->getRelocationSymbol(&RelA, SymTab);
 
       ErrorOr<const Elf_Shdr *> Ret =
-          ELF->getSection(Symbol.second, Symbol.first, ShndxTable);
+          ELF->getSection(Symbol, SymTab, ShndxTable);
       if (std::error_code EC = Ret.getError())
         report_fatal_error(EC.message());
       return *Ret;

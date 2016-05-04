@@ -109,7 +109,7 @@ code is that the llvm IR goes to standard error:
    static void HandleTopLevelExpression() {
      // Evaluate a top-level expression into an anonymous function.
      if (auto FnAST = ParseTopLevelExpr()) {
-  -    if (auto *FnIR = FnAST->Codegen()) {
+  -    if (auto *FnIR = FnAST->codegen()) {
   -      // We're just doing this to make sure it executes.
   -      TheExecutionEngine->finalizeObject();
   -      // JIT the function, returning a function pointer.
@@ -120,7 +120,7 @@ code is that the llvm IR goes to standard error:
   -      double (*FP)() = (double (*)())(intptr_t)FPtr;
   -      // Ignore the return value for this.
   -      (void)FP;
-  +    if (!F->Codegen()) {
+  +    if (!F->codegen()) {
   +      fprintf(stderr, "Error generating code for top level expr");
        }
      } else {
@@ -165,13 +165,13 @@ DWARF Emission Setup
 ====================
 
 Similar to the ``IRBuilder`` class we have a
-```DIBuilder`` <http://llvm.org/doxygen/classllvm_1_1DIBuilder.html>`_ class
+`DIBuilder <http://llvm.org/doxygen/classllvm_1_1DIBuilder.html>`_ class
 that helps in constructing debug metadata for an llvm IR file. It
 corresponds 1:1 similarly to ``IRBuilder`` and llvm IR, but with nicer names.
 Using it does require that you be more familiar with DWARF terminology than
 you needed to be with ``IRBuilder`` and ``Instruction`` names, but if you
 read through the general documentation on the
-```Metadata Format`` <http://llvm.org/docs/SourceLevelDebugging.html>`_ it
+`Metadata Format <http://llvm.org/docs/SourceLevelDebugging.html>`_ it
 should be a little more clear. We'll be using this class to construct all
 of our IR level descriptions. Construction for it takes a module so we
 need to construct it shortly after we construct our module. We've left it
@@ -237,7 +237,7 @@ Functions
 =========
 
 Now that we have our ``Compile Unit`` and our source locations, we can add
-function definitions to the debug info. So in ``PrototypeAST::Codegen`` we
+function definitions to the debug info. So in ``PrototypeAST::codegen()`` we
 add a few lines of code to describe a context for our subprogram, in this
 case the "File", and the actual definition of the function itself.
 
@@ -261,7 +261,8 @@ information) and construct our function definition:
   DISubprogram *SP = DBuilder->createFunction(
       FContext, Name, StringRef(), Unit, LineNo,
       CreateFunctionType(Args.size(), Unit), false /* internal linkage */,
-      true /* definition */, ScopeLine, DINode::FlagPrototyped, false, F);
+      true /* definition */, ScopeLine, DINode::FlagPrototyped, false);
+  F->setSubprogram(SP);
 
 and we now have an DISubprogram that contains a reference to all of our
 metadata for the function.
@@ -309,7 +310,7 @@ and then we have added to all of our AST classes a source location:
      public:
        ExprAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
        virtual ~ExprAST() {}
-       virtual Value* Codegen() = 0;
+       virtual Value* codegen() = 0;
        int getLine() const { return Loc.Line; }
        int getCol() const { return Loc.Col; }
        virtual raw_ostream &dump(raw_ostream &out, int ind) {

@@ -15,11 +15,11 @@
 #define LLVM_LIB_TARGET_SPARC_SPARCSUBTARGET_H
 
 #include "SparcFrameLowering.h"
-#include "SparcInstrInfo.h"
 #include "SparcISelLowering.h"
+#include "SparcInstrInfo.h"
+#include "llvm/CodeGen/SelectionDAGTargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Target/TargetFrameLowering.h"
-#include "llvm/Target/TargetSelectionDAGInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <string>
 
@@ -30,8 +30,10 @@ namespace llvm {
 class StringRef;
 
 class SparcSubtarget : public SparcGenSubtargetInfo {
+  Triple TargetTriple;
   virtual void anchor();
   bool IsV9;
+  bool IsLeon;
   bool V8DeprecatedInsts;
   bool IsVIS, IsVIS2, IsVIS3;
   bool Is64Bit;
@@ -39,12 +41,12 @@ class SparcSubtarget : public SparcGenSubtargetInfo {
   bool UsePopc;
   SparcInstrInfo InstrInfo;
   SparcTargetLowering TLInfo;
-  TargetSelectionDAGInfo TSInfo;
+  SelectionDAGTargetInfo TSInfo;
   SparcFrameLowering FrameLowering;
 
 public:
   SparcSubtarget(const Triple &TT, const std::string &CPU,
-                 const std::string &FS, TargetMachine &TM, bool is64bit);
+                 const std::string &FS, const TargetMachine &TM, bool is64bit);
 
   const SparcInstrInfo *getInstrInfo() const override { return &InstrInfo; }
   const TargetFrameLowering *getFrameLowering() const override {
@@ -56,11 +58,14 @@ public:
   const SparcTargetLowering *getTargetLowering() const override {
     return &TLInfo;
   }
-  const TargetSelectionDAGInfo *getSelectionDAGInfo() const override {
+  const SelectionDAGTargetInfo *getSelectionDAGInfo() const override {
     return &TSInfo;
   }
 
+  bool enableMachineScheduler() const override;
+
   bool isV9() const { return IsV9; }
+  bool isLeon() const { return IsLeon; }
   bool isVIS() const { return IsVIS; }
   bool isVIS2() const { return IsVIS2; }
   bool isVIS3() const { return IsVIS3; }
@@ -86,6 +91,7 @@ public:
   /// spills and arguments.
   int getAdjustedFrameSize(int stackSize) const;
 
+  bool isTargetLinux() const { return TargetTriple.isOSLinux(); }
 };
 
 } // end namespace llvm

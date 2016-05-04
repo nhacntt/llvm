@@ -280,6 +280,10 @@ protected:
   /// to false.
   bool HasNoDeadStrip;
 
+  /// True if this target supports the MachO .alt_entry directive.  Defaults to
+  /// false.
+  bool HasAltEntry;
+
   /// Used to declare a global as being a weak symbol. Defaults to ".weak".
   const char *WeakDirective;
 
@@ -359,6 +363,10 @@ protected:
   /// expressions as logical rather than arithmetic.
   bool UseLogicalShr;
 
+  // If true, emit GOTPCRELX/REX_GOTPCRELX instead of GOTPCREL, on
+  // X86_64 ELF.
+  bool RelaxELFRelocations;
+
 public:
   explicit MCAsmInfo();
   virtual ~MCAsmInfo();
@@ -413,6 +421,15 @@ public:
   /// Return true if the identifier \p Name does not need quotes to be
   /// syntactically correct.
   virtual bool isValidUnquotedName(StringRef Name) const;
+
+  /// Return true if the .section directive should be omitted when
+  /// emitting \p SectionName.  For example:
+  ///
+  /// shouldOmitSectionDirective(".text")
+  ///
+  /// returns false => .section .text,#alloc,#execinstr
+  /// returns true  => .text
+  virtual bool shouldOmitSectionDirective(StringRef SectionName) const;
 
   bool usesSunStyleELFSectionSwitchSyntax() const {
     return SunStyleELFSectionSwitchSyntax;
@@ -489,6 +506,7 @@ public:
   bool hasSingleParameterDotFile() const { return HasSingleParameterDotFile; }
   bool hasIdentDirective() const { return HasIdentDirective; }
   bool hasNoDeadStrip() const { return HasNoDeadStrip; }
+  bool hasAltEntry() const { return HasAltEntry; }
   const char *getWeakDirective() const { return WeakDirective; }
   const char *getWeakRefDirective() const { return WeakRefDirective; }
   bool hasWeakDefDirective() const { return HasWeakDefDirective; }
@@ -554,6 +572,8 @@ public:
   }
 
   bool shouldUseLogicalShr() const { return UseLogicalShr; }
+
+  bool canRelaxRelocations() const { return RelaxELFRelocations; }
 };
 }
 

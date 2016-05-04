@@ -21,9 +21,8 @@
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Compiler.h"
-using namespace llvm;
 
-namespace {
+namespace llvm {
 
 class LLVM_LIBRARY_VISIBILITY NVPTXDAGToDAGISel : public SelectionDAGISel {
   const NVPTXTargetMachine &TM;
@@ -94,7 +93,8 @@ private:
 
   bool ChkMemSDNodeAddressSpace(SDNode *N, unsigned int spN) const;
 
+  static unsigned GetConvertOpcode(MVT DestTy, MVT SrcTy, bool IsSigned);
 };
-}
+} // end namespace llvm
 
 #endif

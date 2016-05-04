@@ -48,7 +48,7 @@ class AArch64TTIImpl : public BasicTTIImplBase<AArch64TTIImpl> {
   };
 
 public:
-  explicit AArch64TTIImpl(const AArch64TargetMachine *TM, Function &F)
+  explicit AArch64TTIImpl(const AArch64TargetMachine *TM, const Function &F)
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
         TLI(ST->getTargetLowering()) {}
 
@@ -75,6 +75,8 @@ public:
   /// \name Vector TTI Implementations
   /// @{
 
+  bool enableInterleavedAccessVectorization() { return true; }
+
   unsigned getNumberOfRegisters(bool Vector) {
     if (Vector) {
       if (ST->hasNEON())
@@ -96,6 +98,9 @@ public:
   unsigned getMaxInterleaveFactor(unsigned VF);
 
   int getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src);
+
+  int getExtractWithExtendCost(unsigned Opcode, Type *Dst, VectorType *VecTy,
+                               unsigned Index);
 
   int getVectorInstrCost(unsigned Opcode, Type *Val, unsigned Index);
 
@@ -125,6 +130,14 @@ public:
   int getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy, unsigned Factor,
                                  ArrayRef<unsigned> Indices, unsigned Alignment,
                                  unsigned AddressSpace);
+
+  unsigned getCacheLineSize();
+
+  unsigned getPrefetchDistance();
+
+  unsigned getMinPrefetchStride();
+
+  unsigned getMaxPrefetchIterationsAhead();
   /// @}
 };
 

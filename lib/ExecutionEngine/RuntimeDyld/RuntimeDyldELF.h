@@ -90,12 +90,12 @@ class RuntimeDyldELF : public RuntimeDyldImpl {
 
   void setMipsABI(const ObjectFile &Obj) override;
 
-  void findPPC64TOCSection(const ELFObjectFileBase &Obj,
-                           ObjSectionToIDMap &LocalSections,
-                           RelocationValueRef &Rel);
-  void findOPDEntrySection(const ELFObjectFileBase &Obj,
-                           ObjSectionToIDMap &LocalSections,
-                           RelocationValueRef &Rel);
+  Error findPPC64TOCSection(const ELFObjectFileBase &Obj,
+                            ObjSectionToIDMap &LocalSections,
+                            RelocationValueRef &Rel);
+  Error findOPDEntrySection(const ELFObjectFileBase &Obj,
+                            ObjSectionToIDMap &LocalSections,
+                            RelocationValueRef &Rel);
 
   size_t getGOTEntrySize();
 
@@ -152,6 +152,8 @@ class RuntimeDyldELF : public RuntimeDyldImpl {
   SmallVector<SID, 2> UnregisteredEHFrameSections;
   SmallVector<SID, 2> RegisteredEHFrameSections;
 
+  bool relocationNeedsStub(const RelocationRef &R) const override;
+
 public:
   RuntimeDyldELF(RuntimeDyld::MemoryManager &MemMgr,
                  RuntimeDyld::SymbolResolver &Resolver);
@@ -161,7 +163,7 @@ public:
   loadObject(const object::ObjectFile &O) override;
 
   void resolveRelocation(const RelocationEntry &RE, uint64_t Value) override;
-  relocation_iterator
+  Expected<relocation_iterator>
   processRelocationRef(unsigned SectionID, relocation_iterator RelI,
                        const ObjectFile &Obj,
                        ObjSectionToIDMap &ObjSectionToID,
@@ -169,8 +171,8 @@ public:
   bool isCompatibleFile(const object::ObjectFile &Obj) const override;
   void registerEHFrames() override;
   void deregisterEHFrames() override;
-  void finalizeLoad(const ObjectFile &Obj,
-                    ObjSectionToIDMap &SectionMap) override;
+  Error finalizeLoad(const ObjectFile &Obj,
+                     ObjSectionToIDMap &SectionMap) override;
 };
 
 } // end namespace llvm
