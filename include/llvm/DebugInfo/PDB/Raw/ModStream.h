@@ -14,9 +14,9 @@
 #include "llvm/DebugInfo/CodeView/CVRecord.h"
 #include "llvm/DebugInfo/CodeView/ModuleSubstream.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
-#include "llvm/DebugInfo/Msf/MappedBlockStream.h"
-#include "llvm/DebugInfo/Msf/StreamArray.h"
-#include "llvm/DebugInfo/Msf/StreamRef.h"
+#include "llvm/DebugInfo/MSF/MappedBlockStream.h"
+#include "llvm/DebugInfo/MSF/StreamArray.h"
+#include "llvm/DebugInfo/MSF/StreamRef.h"
 #include "llvm/Support/Error.h"
 
 namespace llvm {
@@ -32,6 +32,8 @@ public:
 
   Error reload();
 
+  uint32_t signature() const { return Signature; }
+
   iterator_range<codeview::CVSymbolArray::Iterator>
   symbols(bool *HadError) const;
 
@@ -43,12 +45,14 @@ public:
 private:
   const ModInfo &Mod;
 
+  uint32_t Signature;
+
   std::unique_ptr<msf::MappedBlockStream> Stream;
 
   codeview::CVSymbolArray SymbolsSubstream;
-  msf::StreamRef LinesSubstream;
-  msf::StreamRef C13LinesSubstream;
-  msf::StreamRef GlobalRefsSubstream;
+  msf::ReadableStreamRef LinesSubstream;
+  msf::ReadableStreamRef C13LinesSubstream;
+  msf::ReadableStreamRef GlobalRefsSubstream;
 
   codeview::ModuleSubstreamArray LineInfo;
 };

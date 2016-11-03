@@ -15,6 +15,7 @@
 #define LLVM_SUPPORT_REGISTRY_H
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DynamicLibrary.h"
@@ -25,16 +26,15 @@ namespace llvm {
   /// no-argument constructor.
   template <typename T>
   class SimpleRegistryEntry {
-    const char *Name, *Desc;
+    StringRef Name, Desc;
     std::unique_ptr<T> (*Ctor)();
 
   public:
-    SimpleRegistryEntry(const char *N, const char *D, std::unique_ptr<T> (*C)())
-      : Name(N), Desc(D), Ctor(C)
-    {}
+    SimpleRegistryEntry(StringRef N, StringRef D, std::unique_ptr<T> (*C)())
+        : Name(N), Desc(D), Ctor(C) {}
 
-    const char *getName() const { return Name; }
-    const char *getDesc() const { return Desc; }
+    StringRef getName() const { return Name; }
+    StringRef getDesc() const { return Desc; }
     std::unique_ptr<T> instantiate() const { return Ctor(); }
   };
 
@@ -44,6 +44,7 @@ namespace llvm {
   template <typename T>
   class Registry {
   public:
+    typedef T type;
     typedef SimpleRegistryEntry<T> entry;
 
     class node;
@@ -93,7 +94,9 @@ namespace llvm {
       const entry *operator->() const { return &Cur->Val; }
     };
 
-    static iterator begin() { return iterator(Head); }
+    // begin is not defined here in order to avoid usage of an undefined static
+    // data member, instead it's instantiated by LLVM_INSTANTIATE_REGISTRY.
+    static iterator begin();
     static iterator end()   { return iterator(nullptr); }
 
     static iterator_range<iterator> entries() {
@@ -116,7 +119,7 @@ namespace llvm {
       static std::unique_ptr<T> CtorFn() { return make_unique<V>(); }
 
     public:
-      Add(const char *Name, const char *Desc)
+      Add(StringRef Name, StringRef Desc)
           : Entry(Name, Desc, CtorFn), Node(Entry) {
         add_node(&Node);
       }
@@ -126,18 +129,32 @@ namespace llvm {
 
 /// Instantiate a registry class.
 ///
-/// This instantiates add_node and the Head and Tail pointers.
+/// This provides template definitions of add_node, begin, and the Head and Tail
+/// pointers, then explicitly instantiates them. We could explicitly specialize
+/// them, instead of the two-step process of define then instantiate, but
+/// strictly speaking that's not allowed by the C++ standard (we would need to
+/// have explicit specialization declarations in all translation units where the
+/// specialization is used) so we don't.
 #define LLVM_INSTANTIATE_REGISTRY(REGISTRY_CLASS) \
   namespace llvm { \
-  template<> typename REGISTRY_CLASS::node *REGISTRY_CLASS::Head = nullptr; \
-  template<> typename REGISTRY_CLASS::node *REGISTRY_CLASS::Tail = nullptr; \
-  template<> void REGISTRY_CLASS::add_node(REGISTRY_CLASS::node *N) { \
+  template<typename T> typename Registry<T>::node *Registry<T>::Head = nullptr;\
+  template<typename T> typename Registry<T>::node *Registry<T>::Tail = nullptr;\
+  template<typename T> \
+  void Registry<T>::add_node(typename Registry<T>::node *N) { \
     if (Tail) \
       Tail->Next = N; \
     else \
       Head = N; \
     Tail = N; \
   } \
+  template<typename T> typename Registry<T>::iterator Registry<T>::begin() { \
+    return iterator(Head); \
+  } \
+  template REGISTRY_CLASS::node *Registry<REGISTRY_CLASS::type>::Head; \
+  template REGISTRY_CLASS::node *Registry<REGISTRY_CLASS::type>::Tail; \
+  template \
+  void Registry<REGISTRY_CLASS::type>::add_node(REGISTRY_CLASS::node*); \
+  template REGISTRY_CLASS::iterator Registry<REGISTRY_CLASS::type>::begin(); \
   }
 
 #endif // LLVM_SUPPORT_REGISTRY_H
