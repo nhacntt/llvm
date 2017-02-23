@@ -11,40 +11,49 @@
 #define LLVM_DEBUGINFO_MSF_STREAMWRITER_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/DebugInfo/MSF/MSFError.h"
 #include "llvm/DebugInfo/MSF/StreamArray.h"
-#include "llvm/DebugInfo/MSF/StreamInterface.h"
 #include "llvm/DebugInfo/MSF/StreamRef.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
-
-#include <string>
+#include <cstdint>
+#include <type_traits>
 
 namespace llvm {
 namespace msf {
 
 class StreamWriter {
 public:
-  StreamWriter() {}
-  StreamWriter(WritableStreamRef Stream);
+  StreamWriter() = default;
+  explicit StreamWriter(WritableStreamRef Stream);
 
   Error writeBytes(ArrayRef<uint8_t> Buffer);
-  Error writeInteger(uint8_t Int);
-  Error writeInteger(uint16_t Dest);
-  Error writeInteger(uint32_t Dest);
-  Error writeInteger(uint64_t Dest);
-  Error writeInteger(int8_t Int);
-  Error writeInteger(int16_t Dest);
-  Error writeInteger(int32_t Dest);
-  Error writeInteger(int64_t Dest);
+
+  template <typename T>
+  Error writeInteger(T Value,
+                     llvm::support::endianness Endian = llvm::support::native) {
+    static_assert(std::is_integral<T>::value,
+                  "Cannot call writeInteger with non-integral value!");
+    uint8_t Buffer[sizeof(T)];
+    llvm::support::endian::write<T, llvm::support::unaligned>(Buffer, Value,
+                                                              Endian);
+    return writeBytes(Buffer);
+  }
+
   Error writeZeroString(StringRef Str);
   Error writeFixedString(StringRef Str);
   Error writeStreamRef(ReadableStreamRef Ref);
   Error writeStreamRef(ReadableStreamRef Ref, uint32_t Size);
 
-  template <typename T> Error writeEnum(T Num) {
-    return writeInteger(
-        static_cast<typename std::underlying_type<T>::type>(Num));
+  template <typename T>
+  Error writeEnum(T Num,
+                  llvm::support::endianness Endian = llvm::support::native) {
+    static_assert(std::is_enum<T>::value,
+                  "Cannot call writeEnum with non-Enum type");
+
+    using U = typename std::underlying_type<T>::type;
+    return writeInteger<U>(static_cast<U>(Num), Endian);
   }
 
   template <typename T> Error writeObject(const T &Obj) {
@@ -57,7 +66,7 @@ public:
   }
 
   template <typename T> Error writeArray(ArrayRef<T> Array) {
-    if (Array.size() == 0)
+    if (Array.empty())
       return Error::success();
 
     if (Array.size() > UINT32_MAX / sizeof(T))
@@ -86,7 +95,8 @@ private:
   WritableStreamRef Stream;
   uint32_t Offset = 0;
 };
-} // namespace msf
-} // namespace llvm
+
+} // end namespace msf
+} // end namespace llvm
 
 #endif // LLVM_DEBUGINFO_MSF_STREAMWRITER_H

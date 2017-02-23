@@ -1,6 +1,6 @@
 ; RUN: llc -march=amdgcn -verify-machineinstrs < %s | FileCheck -check-prefix=GCN -check-prefix=MOVREL %s
-; RUN: llc -march=amdgcn -mcpu=tonga -verify-machineinstrs < %s | FileCheck -check-prefix=GCN -check-prefix=MOVREL %s
-; RUN: llc -march=amdgcn -mcpu=tonga -amdgpu-vgpr-index-mode -verify-machineinstrs < %s | FileCheck -check-prefix=GCN -check-prefix=IDXMODE %s
+; RUN: llc -march=amdgcn -mcpu=tonga -mattr=-flat-for-global -verify-machineinstrs < %s | FileCheck -check-prefix=GCN -check-prefix=MOVREL %s
+; RUN: llc -march=amdgcn -mcpu=tonga -mattr=-flat-for-global -amdgpu-vgpr-index-mode -verify-machineinstrs < %s | FileCheck -check-prefix=GCN -check-prefix=IDXMODE %s
 
 ; Tests for indirect addressing on SI, which is implemented using dynamic
 ; indexing of vectors.
@@ -78,6 +78,8 @@ entry:
 ; MOVREL: v_movrels_b32_e32 v{{[0-9]}}, v0
 
 ; IDXMODE: s_addk_i32 [[ADD_IDX:s[0-9]+]], 0xfe00{{$}}
+; IDXMODE: v_mov_b32_e32 v2, 2
+; IDXMODE: v_mov_b32_e32 v3, 3
 ; IDXMODE-NEXT: s_set_gpr_idx_on [[ADD_IDX]], src0{{$}}
 ; IDXMODE-NEXT: v_mov_b32_e32 v{{[0-9]+}}, v{{[0-9]+}}
 ; IDXMODE-NEXT: s_set_gpr_idx_off
@@ -95,6 +97,10 @@ entry:
 ; MOVREL: v_movrels_b32_e32 v{{[0-9]}}, v0
 
 ; IDXMODE: s_addk_i32 [[ADD_IDX:s[0-9]+]], 0xfe00{{$}}
+; IDXMODE: v_mov_b32_e32 v0,
+; IDXMODE: v_mov_b32_e32 v1,
+; IDXMODE: v_mov_b32_e32 v2,
+; IDXMODE: v_mov_b32_e32 v3,
 ; IDXMODE-NEXT: s_set_gpr_idx_on [[ADD_IDX]], src0{{$}}
 ; IDXMODE-NEXT: v_mov_b32_e32 v{{[0-9]+}}, v{{[0-9]+}}
 ; IDXMODE-NEXT: s_set_gpr_idx_off
@@ -500,11 +506,13 @@ bb:
 bb1:
   %tmp2 = load volatile <4 x float>, <4 x float> addrspace(1)* undef
   %tmp3 = extractelement <4 x float> %tmp2, i32 undef
+  call void asm sideeffect "; reg use $0", "v"(<4 x float> %tmp2) #0 ; Prevent block optimize out
   br label %bb7
 
 bb4:
   %tmp5 = load volatile <4 x float>, <4 x float> addrspace(1)* undef
   %tmp6 = extractelement <4 x float> %tmp5, i32 undef
+  call void asm sideeffect "; reg use $0", "v"(<4 x float> %tmp5) #0 ; Prevent block optimize out
   br label %bb7
 
 bb7:
@@ -548,11 +556,13 @@ bb:
 bb1:                                              ; preds = %bb
   %tmp2 = load volatile <4 x float>, <4 x float> addrspace(1)* undef
   %tmp3 = insertelement <4 x float> %tmp2, float %val0, i32 undef
+  call void asm sideeffect "; reg use $0", "v"(<4 x float> %tmp3) #0 ; Prevent block optimize out
   br label %bb7
 
 bb4:                                              ; preds = %bb
   %tmp5 = load volatile <4 x float>, <4 x float> addrspace(1)* undef
   %tmp6 = insertelement <4 x float> %tmp5, float %val0, i32 undef
+  call void asm sideeffect "; reg use $0", "v"(<4 x float> %tmp6) #0 ; Prevent block optimize out
   br label %bb7
 
 bb7:                                              ; preds = %bb4, %bb1
@@ -572,12 +582,12 @@ bb7:                                              ; preds = %bb4, %bb1
 ; GCN-DAG: v_mov_b32_e32 v{{[0-9]+}}, 0x41a80000
 ; GCN-DAG: v_mov_b32_e32 v{{[0-9]+}}, 0x41b00000
 ; GCN-DAG: s_load_dword [[ARG:s[0-9]+]]
+; IDXMODE-DAG: s_add_i32 [[ARG_ADD:s[0-9]+]], [[ARG]], -16
 
 ; MOVREL-DAG: s_add_i32 m0, [[ARG]], -16
 ; MOVREL: v_movreld_b32_e32 v[[VEC0_ELT0]], 4.0
 ; GCN-NOT: m0
 
-; IDXMODE-DAG: s_add_i32 [[ARG_ADD:s[0-9]+]], [[ARG]], -16
 ; IDXMODE: s_set_gpr_idx_on [[ARG_ADD]], dst
 ; IDXMODE: v_mov_b32_e32 v[[VEC0_ELT0]], 4.0
 ; IDXMODE: s_set_gpr_idx_off
@@ -739,6 +749,8 @@ bb8:                                              ; preds = %bb2
 }
 
 declare i32 @llvm.amdgcn.workitem.id.x() #1
+declare void @llvm.amdgcn.s.barrier() #2
 
 attributes #0 = { nounwind }
 attributes #1 = { nounwind readnone }
+attributes #2 = { nounwind convergent }

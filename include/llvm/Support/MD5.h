@@ -1,4 +1,4 @@
-/*
+/* -*- C++ -*-
  * This code is derived from (original license follows):
  *
  * This is an OpenSSL-compatible implementation of the RSA Data Security, Inc.
@@ -29,18 +29,25 @@
 #define LLVM_SUPPORT_MD5_H
 
 #include "llvm/ADT/SmallString.h"
-#include "llvm/Support/DataTypes.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Endian.h"
+#include <array>
+#include <cstdint>
 
 namespace llvm {
+
 template <typename T> class ArrayRef;
 
 class MD5 {
   // Any 32-bit or wider unsigned integer data type will do.
   typedef uint32_t MD5_u32plus;
 
-  MD5_u32plus a, b, c, d;
-  MD5_u32plus hi, lo;
+  MD5_u32plus a = 0x67452301;
+  MD5_u32plus b = 0xefcdab89;
+  MD5_u32plus c = 0x98badcfe;
+  MD5_u32plus d = 0x10325476;
+  MD5_u32plus hi = 0;
+  MD5_u32plus lo = 0;
   uint8_t buffer[64];
   MD5_u32plus block[16];
 
@@ -62,22 +69,26 @@ public:
   /// deposited into \p Str. The result will be of length 32.
   static void stringifyResult(MD5Result &Result, SmallString<32> &Str);
 
+  /// \brief Computes the hash for a given bytes.
+  static std::array<uint8_t, 16> hash(ArrayRef<uint8_t> Data);
+
 private:
   const uint8_t *body(ArrayRef<uint8_t> Data);
 };
 
 /// Helper to compute and return lower 64 bits of the given string's MD5 hash.
 inline uint64_t MD5Hash(StringRef Str) {
+  using namespace support;
+
   MD5 Hash;
   Hash.update(Str);
-  llvm::MD5::MD5Result Result;
+  MD5::MD5Result Result;
   Hash.final(Result);
   // Return the least significant 8 bytes. Our MD5 implementation returns the
   // result in little endian, so we may need to swap bytes.
-  using namespace llvm::support;
   return endian::read<uint64_t, little, unaligned>(Result);
 }
 
-}
+} // end namespace llvm
 
-#endif
+#endif // LLVM_SUPPORT_MD5_H

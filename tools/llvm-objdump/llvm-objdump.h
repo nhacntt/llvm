@@ -35,6 +35,7 @@ extern cl::list<std::string> FilterSections;
 extern cl::opt<bool> Disassemble;
 extern cl::opt<bool> DisassembleAll;
 extern cl::opt<bool> NoShowRawInsn;
+extern cl::opt<bool> NoLeadingAddr;
 extern cl::opt<bool> PrivateHeaders;
 extern cl::opt<bool> FirstPrivateHeader;
 extern cl::opt<bool> ExportsTrie;
@@ -79,6 +80,7 @@ void printCOFFSymbolTable(const object::COFFImportFile *i);
 void printCOFFSymbolTable(const object::COFFObjectFile *o);
 void printMachOFileHeader(const object::ObjectFile *o);
 void printMachOLoadCommands(const object::ObjectFile *o);
+void printWasmFileHeader(const object::ObjectFile *o);
 void printExportsTrie(const object::ObjectFile *o);
 void printRebaseTable(const object::ObjectFile *o);
 void printBindTable(const object::ObjectFile *o);
@@ -91,6 +93,7 @@ void PrintSectionContents(const object::ObjectFile *o);
 void PrintSymbolTable(const object::ObjectFile *o, StringRef ArchiveName,
                       StringRef ArchitectureName = StringRef());
 LLVM_ATTRIBUTE_NORETURN void error(Twine Message);
+LLVM_ATTRIBUTE_NORETURN void report_error(StringRef File, Twine Message);
 LLVM_ATTRIBUTE_NORETURN void report_error(StringRef File, std::error_code EC);
 LLVM_ATTRIBUTE_NORETURN void report_error(StringRef File, llvm::Error E);
 LLVM_ATTRIBUTE_NORETURN void report_error(StringRef FileName,

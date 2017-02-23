@@ -1,4 +1,4 @@
-//===-- LiveRegMatrix.cpp - Track register interference -------------------===//
+//===- LiveRegMatrix.cpp - Track register interference --------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,15 +11,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/LiveRegMatrix.h"
 #include "RegisterCoalescer.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
+#include "llvm/CodeGen/LiveRegMatrix.h"
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/CodeGen/LiveIntervalUnion.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/Pass.h"
+#include "llvm/MC/LaneBitmask.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include <cassert>
 
 using namespace llvm;
 
@@ -36,8 +43,7 @@ INITIALIZE_PASS_DEPENDENCY(VirtRegMap)
 INITIALIZE_PASS_END(LiveRegMatrix, "liveregmatrix",
                     "Live Register Matrix", false, false)
 
-LiveRegMatrix::LiveRegMatrix() : MachineFunctionPass(ID),
-  UserTag(0), RegMaskTag(0), RegMaskVirtReg(0) {}
+LiveRegMatrix::LiveRegMatrix() : MachineFunctionPass(ID) {}
 
 void LiveRegMatrix::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
@@ -79,7 +85,7 @@ static bool foreachUnit(const TargetRegisterInfo *TRI,
       unsigned Unit = (*Units).first;
       LaneBitmask Mask = (*Units).second;
       for (LiveInterval::SubRange &S : VRegInterval.subranges()) {
-        if (S.LaneMask & Mask) {
+        if ((S.LaneMask & Mask).any()) {
           if (Func(Unit, S))
             return true;
           break;

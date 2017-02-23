@@ -27,6 +27,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/MemorySSA.h"
+#include "llvm/Transforms/Utils/MemorySSAUpdater.h"
 
 using namespace llvm;
 
@@ -201,8 +202,15 @@ class GVNHoist {
 public:
   GVNHoist(DominatorTree *DT, AliasAnalysis *AA, MemoryDependenceResults *MD,
            MemorySSA *MSSA, bool OptForMinSize)
-      : DT(DT), AA(AA), MD(MD), MSSA(MSSA), OptForMinSize(OptForMinSize),
-        HoistingGeps(OptForMinSize), HoistedCtr(0) {}
+      : DT(DT), AA(AA), MD(MD), MSSA(MSSA),
+        MSSAUpdater(make_unique<MemorySSAUpdater>(MSSA)),
+        OptForMinSize(OptForMinSize), HoistingGeps(OptForMinSize),
+        HoistedCtr(0) {
+    // Hoist as far as possible when optimizing for code-size.
+    if (OptForMinSize)
+      MaxNumberOfBBSInPath = -1;
+  }
+
   bool run(Function &F) {
     VN.setDomTree(DT);
     VN.setAliasAnalysis(AA);
@@ -246,6 +254,7 @@ private:
   AliasAnalysis *AA;
   MemoryDependenceResults *MD;
   MemorySSA *MSSA;
+  std::unique_ptr<MemorySSAUpdater> MSSAUpdater;
   const bool OptForMinSize;
   const bool HoistingGeps;
   DenseMap<const Value *, unsigned> DFSNumber;
@@ -391,16 +400,16 @@ private:
         continue;
       }
 
+      // Stop walk once the limit is reached.
+      if (NBBsOnAllPaths == 0)
+        return true;
+
       // Impossible to hoist with exceptions on the path.
       if (hasEH(*I))
         return true;
 
       // Check that we do not move a store past loads.
       if (hasMemoryUse(NewPt, Def, *I))
-        return true;
-
-      // Stop walk once the limit is reached.
-      if (NBBsOnAllPaths == 0)
         return true;
 
       // -1 is unlimited number of blocks on all paths.
@@ -433,12 +442,12 @@ private:
         continue;
       }
 
-      // Impossible to hoist with exceptions on the path.
-      if (hasEH(*I))
-        return true;
-
       // Stop walk once the limit is reached.
       if (NBBsOnAllPaths == 0)
+        return true;
+
+      // Impossible to hoist with exceptions on the path.
+      if (hasEH(*I))
         return true;
 
       // -1 is unlimited number of blocks on all paths.
@@ -500,10 +509,13 @@ private:
   bool safeToHoistScalar(const BasicBlock *HoistBB,
                          SmallPtrSetImpl<const BasicBlock *> &WL,
                          int &NBBsOnAllPaths) {
-    // Check that the hoisted expression is needed on all paths.  Enable scalar
-    // hoisting at -Oz as it is safe to hoist scalars to a place where they are
-    // partially needed.
-    if (!OptForMinSize && !hoistingFromAllPaths(HoistBB, WL))
+    // Enable scalar hoisting at -Oz as it is safe to hoist scalars to a place
+    // where they are partially needed.
+    if (OptForMinSize)
+      return true;
+
+    // Check that the hoisted expression is needed on all paths.
+    if (!hoistingFromAllPaths(HoistBB, WL))
       return false;
 
     for (const BasicBlock *BB : WL)
@@ -530,7 +542,7 @@ private:
       std::sort(InstructionsToHoist.begin(), InstructionsToHoist.end(), Pred);
     }
 
-    int NBBsOnAllPaths = MaxNumberOfBBSInPath;
+    int NumBBsOnAllPaths = MaxNumberOfBBSInPath;
 
     SmallVecImplInsn::iterator II = InstructionsToHoist.begin();
     SmallVecImplInsn::iterator Start = II;
@@ -546,10 +558,12 @@ private:
       BasicBlock *NewHoistBB;
       Instruction *NewHoistPt;
 
-      if (BB == HoistBB) {
+      if (BB == HoistBB) { // Both are in the same Basic Block.
         NewHoistBB = HoistBB;
         NewHoistPt = firstInBB(Insn, HoistPt) ? Insn : HoistPt;
       } else {
+        // If the hoisting point contains one of the instructions,
+        // then hoist there, otherwise hoist before the terminator.
         NewHoistBB = DT->findNearestCommonDominator(HoistBB, BB);
         if (NewHoistBB == BB)
           NewHoistPt = Insn;
@@ -564,7 +578,7 @@ private:
       WL.insert(BB);
 
       if (K == InsKind::Scalar) {
-        if (safeToHoistScalar(NewHoistBB, WL, NBBsOnAllPaths)) {
+        if (safeToHoistScalar(NewHoistBB, WL, NumBBsOnAllPaths)) {
           // Extend HoistPt to NewHoistPt.
           HoistPt = NewHoistPt;
           HoistBB = NewHoistBB;
@@ -581,9 +595,9 @@ private:
              hoistingFromAllPaths(NewHoistBB, WL)) &&
             // Also check that it is safe to move the load or store from HoistPt
             // to NewHoistPt, and from Insn to NewHoistPt.
-            safeToHoistLdSt(NewHoistPt, HoistPt, UD, K, NBBsOnAllPaths) &&
+            safeToHoistLdSt(NewHoistPt, HoistPt, UD, K, NumBBsOnAllPaths) &&
             safeToHoistLdSt(NewHoistPt, Insn, MSSA->getMemoryAccess(Insn),
-                            K, NBBsOnAllPaths)) {
+                            K, NumBBsOnAllPaths)) {
           // Extend HoistPt to NewHoistPt.
           HoistPt = NewHoistPt;
           HoistBB = NewHoistBB;
@@ -602,7 +616,7 @@ private:
         UD = MSSA->getMemoryAccess(*Start);
       HoistPt = Insn;
       HoistBB = BB;
-      NBBsOnAllPaths = MaxNumberOfBBSInPath;
+      NumBBsOnAllPaths = MaxNumberOfBBSInPath;
     }
 
     // Save the last partition.
@@ -792,6 +806,7 @@ private:
 
         // Move the instruction at the end of HoistPt.
         Instruction *Last = HoistPt->getTerminator();
+        MD->removeInstruction(Repl);
         Repl->moveBefore(Last);
 
         DFSNumber[Repl] = DFSNumber[Last]++;
@@ -806,9 +821,9 @@ private:
           // legal when the ld/st is not moved past its current definition.
           MemoryAccess *Def = OldMemAcc->getDefiningAccess();
           NewMemAcc =
-              MSSA->createMemoryAccessInBB(Repl, Def, HoistPt, MemorySSA::End);
+            MSSAUpdater->createMemoryAccessInBB(Repl, Def, HoistPt, MemorySSA::End);
           OldMemAcc->replaceAllUsesWith(NewMemAcc);
-          MSSA->removeMemoryAccess(OldMemAcc);
+          MSSAUpdater->removeMemoryAccess(OldMemAcc);
         }
       }
 
@@ -847,7 +862,7 @@ private:
             // Update the uses of the old MSSA access with NewMemAcc.
             MemoryAccess *OldMA = MSSA->getMemoryAccess(I);
             OldMA->replaceAllUsesWith(NewMemAcc);
-            MSSA->removeMemoryAccess(OldMA);
+            MSSAUpdater->removeMemoryAccess(OldMA);
           }
 
           Repl->andIRFlags(I);
@@ -869,7 +884,7 @@ private:
           auto In = Phi->incoming_values();
           if (all_of(In, [&](Use &U) { return U == NewMemAcc; })) {
             Phi->replaceAllUsesWith(NewMemAcc);
-            MSSA->removeMemoryAccess(Phi);
+            MSSAUpdater->removeMemoryAccess(Phi);
           }
         }
       }

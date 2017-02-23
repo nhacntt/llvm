@@ -33,7 +33,7 @@ namespace llvm {
 
 class TargetLoweringObjectFileELF : public TargetLoweringObjectFile {
   bool UseInitArray;
-  mutable unsigned NextUniqueID = 0;
+  mutable unsigned NextUniqueID = 1;  // ID 0 is reserved for execute-only sections
 
 protected:
   MCSymbolRefExpr::VariantKind PLTRelativeVariantKind =
@@ -170,6 +170,31 @@ public:
   void emitLinkerFlagsForGlobal(raw_ostream &OS,
                                 const GlobalValue *GV) const override;
 };
+
+class TargetLoweringObjectFileWasm : public TargetLoweringObjectFile {
+public:
+  TargetLoweringObjectFileWasm() {}
+
+  ~TargetLoweringObjectFileWasm() override {}
+
+  MCSection *getExplicitSectionGlobal(const GlobalObject *GO, SectionKind Kind,
+                                      const TargetMachine &TM) const override;
+
+  MCSection *SelectSectionForGlobal(const GlobalObject *GO, SectionKind Kind,
+                                    const TargetMachine &TM) const override;
+
+  bool shouldPutJumpTableInFunctionSection(bool UsesLabelDifference,
+                                           const Function &F) const override;
+
+  void InitializeWasm();
+
+  const MCExpr *lowerRelativeReference(const GlobalValue *LHS,
+                                       const GlobalValue *RHS,
+                                       const TargetMachine &TM) const override;
+};
+
+void emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
+                                  const Triple &TT, Mangler &Mangler);
 
 } // end namespace llvm
 

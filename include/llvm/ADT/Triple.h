@@ -71,6 +71,7 @@ public:
     sparcel,        // Sparc: (endianness = little). NB: 'Sparcle' is a CPU variant
     systemz,        // SystemZ: s390x
     tce,            // TCE (http://tce.cs.tut.fi/): tce
+    tcele,          // TCE little endian (http://tce.cs.tut.fi/): tcele
     thumb,          // Thumb (little endian): thumb, thumbv.*
     thumbeb,        // Thumb (big endian): thumbeb
     x86,            // X86: i[3-9]86
@@ -109,6 +110,7 @@ public:
     ARMSubArch_v7m,
     ARMSubArch_v7s,
     ARMSubArch_v7k,
+    ARMSubArch_v7ve,
     ARMSubArch_v6,
     ARMSubArch_v6m,
     ARMSubArch_v6k,
@@ -205,6 +207,7 @@ public:
     COFF,
     ELF,
     MachO,
+    Wasm,
   };
 
 private:
@@ -573,6 +576,11 @@ public:
   /// Tests whether the environment is MachO.
   bool isOSBinFormatMachO() const {
     return getObjectFormat() == Triple::MachO;
+  }
+
+  /// Tests whether the OS uses the Wasm binary format.
+  bool isOSBinFormatWasm() const {
+    return getObjectFormat() == Triple::Wasm;
   }
 
   /// Tests whether the target is the PS4 CPU

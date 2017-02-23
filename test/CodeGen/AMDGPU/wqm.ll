@@ -1,5 +1,5 @@
-;RUN: llc < %s -march=amdgcn -mcpu=verde -verify-machineinstrs | FileCheck %s --check-prefix=CHECK --check-prefix=SI
-;RUN: llc < %s -march=amdgcn -mcpu=tonga -verify-machineinstrs | FileCheck %s --check-prefix=CHECK --check-prefix=VI
+; RUN: llc -march=amdgcn -mcpu=verde -verify-machineinstrs < %s | FileCheck -check-prefix=CHECK -check-prefix=SI %s
+; RUN: llc -march=amdgcn -mcpu=tonga -verify-machineinstrs < %s | FileCheck -check-prefix=CHECK -check-prefix=VI %s
 
 ; Check that WQM isn't triggered by image load/store intrinsics.
 ;
@@ -25,9 +25,7 @@ main_body:
   %c.3 = extractelement <4 x i32> %c.2, i32 0
   %gep = getelementptr float, float addrspace(1)* %ptr, i32 %c.3
   %data = load float, float addrspace(1)* %gep
-
-  call void @llvm.SI.export(i32 15, i32 1, i32 1, i32 0, i32 1, float %data, float undef, float undef, float undef)
-
+  call void @llvm.amdgcn.exp.f32(i32 0, i32 15, float %data, float undef, float undef, float undef, i1 true, i1 true) #1
   ret void
 }
 
@@ -213,8 +211,8 @@ END:
 ;CHECK: image_sample
 ;CHECK: s_and_b64 exec, exec, [[ORIG]]
 ;CHECK: image_sample
-;CHECK: store
 ;CHECK: v_cmp
+;CHECK: store
 define amdgpu_ps float @test_control_flow_3(<8 x i32> inreg %rsrc, <4 x i32> inreg %sampler, i32 %idx, i32 %coord) {
 main_body:
   %tex = call <4 x float> @llvm.SI.image.sample.i32(i32 %coord, <8 x i32> %rsrc, <4 x i32> %sampler, i32 15, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0)
@@ -355,12 +353,11 @@ main_body:
 ; CHECK: s_wqm_b64 exec, exec
 ; CHECK-DAG: v_mov_b32_e32 [[CTR:v[0-9]+]], 0
 ; CHECK-DAG: v_mov_b32_e32 [[SEVEN:v[0-9]+]], 0x40e00000
-; CHECK: s_branch [[LOOPHDR:BB[0-9]+_[0-9]+]]
 
+; CHECK: [[LOOPHDR:BB[0-9]+_[0-9]+]]: ; %body
 ; CHECK: v_add_f32_e32 [[CTR]], 2.0, [[CTR]]
-; CHECK: [[LOOPHDR]]: ; %loop
 ; CHECK: v_cmp_lt_f32_e32 vcc, [[SEVEN]], [[CTR]]
-; CHECK: s_cbranch_vccz
+; CHECK: s_cbranch_vccz [[LOOPHDR]]
 ; CHECK: ; %break
 
 ; CHECK: ; return
@@ -395,7 +392,7 @@ break:
 ; CHECK: s_and_b64 exec, exec, [[LIVE]]
 ; CHECK: buffer_store_dword {{v[0-9]+}}, off, {{s\[[0-9]+:[0-9]+\]}}, 0
 ; CHECK: s_wqm_b64 exec, exec
-; CHECK: buffer_store_dword {{v[0-9]+}}, off, {{s\[[0-9]+:[0-9]+\]}}, {{s[0-9]+$}}
+; CHECK: buffer_store_dword {{v[0-9]+}}, off, {{s\[[0-9]+:[0-9]+\]}}, {{s[0-9]+}} offset:4{{$}}
 ; CHECK: s_and_b64 exec, exec, [[LIVE]]
 ; CHECK: buffer_store_dword {{v[0-9]+}}, {{v[0-9]+}}, {{s\[[0-9]+:[0-9]+\]}}, 0 idxen
 ; CHECK: s_wqm_b64 exec, exec
@@ -501,7 +498,7 @@ end:
   ret <4 x float> %r
 }
 
-
+declare void @llvm.amdgcn.exp.f32(i32, i32, float, float, float, float, i1, i1) #1
 declare void @llvm.amdgcn.image.store.v4f32.v4i32.v8i32(<4 x float>, <4 x i32>, <8 x i32>, i32, i1, i1, i1, i1) #1
 declare void @llvm.amdgcn.buffer.store.f32(float, <4 x i32>, i32, i32, i1, i1) #1
 declare void @llvm.amdgcn.buffer.store.v4f32(<4 x float>, <4 x i32>, i32, i32, i1, i1) #1
@@ -513,8 +510,7 @@ declare <4 x float> @llvm.SI.image.sample.i32(i32, <8 x i32>, <4 x i32>, i32, i3
 declare <4 x float> @llvm.SI.image.sample.v2i32(<2 x i32>, <8 x i32>, <4 x i32>, i32, i32, i32, i32, i32, i32, i32, i32) #3
 declare <4 x float> @llvm.SI.image.sample.v4i32(<4 x i32>, <8 x i32>, <4 x i32>, i32, i32, i32, i32, i32, i32, i32, i32) #3
 
-declare void @llvm.AMDGPU.kill(float)
-declare void @llvm.SI.export(i32, i32, i32, i32, i32, float, float, float, float)
+declare void @llvm.AMDGPU.kill(float) #1
 
 attributes #1 = { nounwind }
 attributes #2 = { nounwind readonly }

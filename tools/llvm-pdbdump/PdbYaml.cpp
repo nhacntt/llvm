@@ -18,12 +18,12 @@
 #include "llvm/DebugInfo/CodeView/SymbolDeserializer.h"
 #include "llvm/DebugInfo/CodeView/SymbolVisitorCallbackPipeline.h"
 #include "llvm/DebugInfo/CodeView/TypeDeserializer.h"
-#include "llvm/DebugInfo/CodeView/TypeSerializationVisitor.h"
+#include "llvm/DebugInfo/CodeView/TypeSerializer.h"
 #include "llvm/DebugInfo/CodeView/TypeVisitorCallbackPipeline.h"
+#include "llvm/DebugInfo/PDB/Native/PDBFile.h"
+#include "llvm/DebugInfo/PDB/Native/TpiHashing.h"
 #include "llvm/DebugInfo/PDB/PDBExtras.h"
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
-#include "llvm/DebugInfo/PDB/Raw/PDBFile.h"
-#include "llvm/DebugInfo/PDB/Raw/TpiHashing.h"
 
 using namespace llvm;
 using namespace llvm::pdb;
@@ -57,7 +57,7 @@ template <> struct ScalarTraits<llvm::pdb::PDB_UniqueId> {
         Scalar[24] != '-')
       return "GUID sections are not properly delineated with dashes";
 
-    char *OutBuffer = S.Guid;
+    uint8_t *OutBuffer = S.Guid;
     for (auto Iter = Scalar.begin(); Iter != Scalar.end();) {
       if (*Iter == '-' || *Iter == '{' || *Iter == '}') {
         ++Iter;
@@ -140,6 +140,7 @@ void MappingTraits<PdbObject>::mapping(IO &IO, PdbObject &Obj) {
   IO.mapOptional("MSF", Obj.Headers);
   IO.mapOptional("StreamSizes", Obj.StreamSizes);
   IO.mapOptional("StreamMap", Obj.StreamMap);
+  IO.mapOptional("StringTable", Obj.StringTable);
   IO.mapOptional("PdbStream", Obj.PdbStream);
   IO.mapOptional("DbiStream", Obj.DbiStream);
   IO.mapOptionalWithContext("TpiStream", Obj.TpiStream, Obj.Allocator);
@@ -176,7 +177,6 @@ void MappingTraits<PdbInfoStream>::mapping(IO &IO, PdbInfoStream &Obj) {
   IO.mapRequired("Guid", Obj.Guid);
   IO.mapRequired("Signature", Obj.Signature);
   IO.mapRequired("Version", Obj.Version);
-  IO.mapRequired("NamedStreams", Obj.NamedStreams);
 }
 
 void MappingTraits<PdbDbiStream>::mapping(IO &IO, PdbDbiStream &Obj) {
@@ -244,8 +244,7 @@ void MappingContextTraits<PdbTpiRecord, pdb::yaml::SerializationContext>::
             pdb::yaml::SerializationContext &Context) {
   codeview::TypeVisitorCallbackPipeline Pipeline;
   codeview::TypeDeserializer Deserializer;
-  codeview::TypeSerializationVisitor Serializer(Context.FieldListBuilder,
-                                                Context.TypeTableBuilder);
+  codeview::TypeSerializer Serializer(Context.Allocator);
   pdb::TpiHashUpdater Hasher;
 
   if (IO.outputting()) {
@@ -255,6 +254,11 @@ void MappingContextTraits<PdbTpiRecord, pdb::yaml::SerializationContext>::
   } else {
     // For Yaml to PDB, extract from the high level record type, then write it
     // to bytes.
+
+    // This might be interpreted as a hack, but serializing FieldList
+    // sub-records requires having access to the same serializer being used by
+    // the FieldList itself.
+    Context.ActiveSerializer = &Serializer;
     Pipeline.addCallbackToPipeline(Context.Dumper);
     Pipeline.addCallbackToPipeline(Serializer);
     Pipeline.addCallbackToPipeline(Hasher);
@@ -262,4 +266,5 @@ void MappingContextTraits<PdbTpiRecord, pdb::yaml::SerializationContext>::
 
   codeview::CVTypeVisitor Visitor(Pipeline);
   consumeError(Visitor.visitTypeRecord(Obj.Record));
+  Context.ActiveSerializer = nullptr;
 }

@@ -149,7 +149,7 @@ rarely have to include this file directly).
 
   .. code-block:: c++
 
-    if (AllocationInst *AI = dyn_cast<AllocationInst>(Val)) {
+    if (auto *AI = dyn_cast<AllocationInst>(Val)) {
       // ...
     }
 
@@ -262,6 +262,134 @@ As with a ``StringRef``, ``Twine`` objects point to external memory and should
 almost never be stored or mentioned directly.  They are intended solely for use
 when defining a function which should be able to efficiently accept concatenated
 strings.
+
+.. _formatting_strings:
+
+Formatting strings (the ``formatv`` function)
+---------------------------------------------
+While LLVM doesn't necessarily do a lot of string manipulation and parsing, it
+does do a lot of string formatting.  From diagnostic messages, to llvm tool
+outputs such as ``llvm-readobj`` to printing verbose disassembly listings and
+LLDB runtime logging, the need for string formatting is pervasive.
+
+The ``formatv`` is similar in spirit to ``printf``, but uses a different syntax
+which borrows heavily from Python and C#.  Unlike ``printf`` it deduces the type
+to be formatted at compile time, so it does not need a format specifier such as
+``%d``.  This reduces the mental overhead of trying to construct portable format
+strings, especially for platform-specific types like ``size_t`` or pointer types.
+Unlike both ``printf`` and Python, it additionally fails to compile if LLVM does
+not know how to format the type.  These two properties ensure that the function
+is both safer and simpler to use than traditional formatting methods such as 
+the ``printf`` family of functions.
+
+Simple formatting
+^^^^^^^^^^^^^^^^^
+
+A call to ``formatv`` involves a single **format string** consisting of 0 or more
+**replacement sequences**, followed by a variable length list of **replacement values**.
+A replacement sequence is a string of the form ``{N[[,align]:style]}``.
+
+``N`` refers to the 0-based index of the argument from the list of replacement
+values.  Note that this means it is possible to reference the same parameter
+multiple times, possibly with different style and/or alignment options, in any order.
+
+``align`` is an optional string specifying the width of the field to format
+the value into, and the alignment of the value within the field.  It is specified as
+an optional **alignment style** followed by a positive integral **field width**.  The
+alignment style can be one of the characters ``-`` (left align), ``=`` (center align),
+or ``+`` (right align).  The default is right aligned.  
+
+``style`` is an optional string consisting of a type specific that controls the
+formatting of the value.  For example, to format a floating point value as a percentage,
+you can use the style option ``P``.
+
+Custom formatting
+^^^^^^^^^^^^^^^^^
+
+There are two ways to customize the formatting behavior for a type.
+
+1. Provide a template specialization of ``llvm::format_provider<T>`` for your
+   type ``T`` with the appropriate static format method.
+
+  .. code-block:: c++
+  
+    namespace llvm {
+      template<>
+      struct format_provider<MyFooBar> {
+        static void format(const MyFooBar &V, raw_ostream &Stream, StringRef Style) {
+          // Do whatever is necessary to format `V` into `Stream`
+        }
+      };
+      void foo() {
+        MyFooBar X;
+        std::string S = formatv("{0}", X);
+      }
+    }
+    
+  This is a useful extensibility mechanism for adding support for formatting your own
+  custom types with your own custom Style options.  But it does not help when you want
+  to extend the mechanism for formatting a type that the library already knows how to
+  format.  For that, we need something else.
+    
+2. Provide a **format adapter** inheriting from ``llvm::FormatAdapter<T>``.
+
+  .. code-block:: c++
+  
+    namespace anything {
+      struct format_int_custom : public llvm::FormatAdapter<int> {
+        explicit format_int_custom(int N) : llvm::FormatAdapter<int>(N) {}
+        void format(llvm::raw_ostream &Stream, StringRef Style) override {
+          // Do whatever is necessary to format ``this->Item`` into ``Stream``
+        }
+      };
+    }
+    namespace llvm {
+      void foo() {
+        std::string S = formatv("{0}", anything::format_int_custom(42));
+      }
+    }
+    
+  If the type is detected to be derived from ``FormatAdapter<T>``, ``formatv``
+  will call the
+  ``format`` method on the argument passing in the specified style.  This allows
+  one to provide custom formatting of any type, including one which already has
+  a builtin format provider.
+
+``formatv`` Examples
+^^^^^^^^^^^^^^^^^^^^
+Below is intended to provide an incomplete set of examples demonstrating
+the usage of ``formatv``.  More information can be found by reading the
+doxygen documentation or by looking at the unit test suite.
+
+
+.. code-block:: c++
+  
+  std::string S;
+  // Simple formatting of basic types and implicit string conversion.
+  S = formatv("{0} ({1:P})", 7, 0.35);  // S == "7 (35.00%)"
+  
+  // Out-of-order referencing and multi-referencing
+  outs() << formatv("{0} {2} {1} {0}", 1, "test", 3); // prints "1 3 test 1"
+  
+  // Left, right, and center alignment
+  S = formatv("{0,7}",  'a');  // S == "      a";
+  S = formatv("{0,-7}", 'a');  // S == "a      ";
+  S = formatv("{0,=7}", 'a');  // S == "   a   ";
+  S = formatv("{0,+7}", 'a');  // S == "      a";
+  
+  // Custom styles
+  S = formatv("{0:N} - {0:x} - {1:E}", 12345, 123908342); // S == "12,345 - 0x3039 - 1.24E8"
+  
+  // Adapters
+  S = formatv("{0}", fmt_align(42, AlignStyle::Center, 7));  // S == "  42   "
+  S = formatv("{0}", fmt_repeat("hi", 3)); // S == "hihihi"
+  S = formatv("{0}", fmt_pad("hi", 2, 6)); // S == "  hi      "
+  
+  // Ranges
+  std::vector<int> V = {8, 9, 10};
+  S = formatv("{0}", make_range(V.begin(), V.end())); // S == "8, 9, 10"
+  S = formatv("{0:$[+]}", make_range(V.begin(), V.end())); // S == "8+9+10"
+  S = formatv("{0:$[ + ]@[x]}", make_range(V.begin(), V.end())); // S == "0x8 + 0x9 + 0xA"
 
 .. _error_apis:
 
@@ -469,8 +597,8 @@ a variadic list of "handlers", each of which must be a callable type (a
 function, lambda, or class with a call operator) with one argument. The
 ``handleErrors`` function will visit each handler in the sequence and check its
 argument type against the dynamic type of the error, running the first handler
-that matches. This is the same process that is used for catch clauses in C++
-exceptions.
+that matches. This is the same decision process that is used decide which catch
+clause to run for a C++ exception.
 
 Since the list of handlers passed to ``handleErrors`` may not cover every error
 type that can occur, the ``handleErrors`` function also returns an Error value
@@ -499,6 +627,11 @@ function should generally be avoided: the introduction of a new error type
 elsewhere in the program can easily turn a formerly exhaustive list of errors
 into a non-exhaustive list, risking unexpected program termination. Where
 possible, use handleErrors and propagate unknown errors up the stack instead.
+
+For tool code, where errors can be handled by printing an error message then
+exiting with an error code, the :ref:`ExitOnError <err_exitonerr>` utility
+may be a better choice than handleErrors, as it simplifies control flow when
+calling fallible functions.
 
 StringError
 """""""""""
@@ -579,6 +712,8 @@ actually recognises three different forms of handler signature:
 
 Any error returned from a handler will be returned from the ``handleErrors``
 function so that it can be handled itself, or propagated up the stack.
+
+.. _err_exitonerr:
 
 Using ExitOnError to simplify tool code
 """""""""""""""""""""""""""""""""""""""
@@ -729,7 +864,7 @@ completing the walk over the archive they could use the ``joinErrors`` utility:
 
 The ``joinErrors`` routine builds a special error type called ``ErrorList``,
 which holds a list of user defined errors. The ``handleErrors`` routine
-recognizes this type and will attempt to handle each of the contained erorrs in
+recognizes this type and will attempt to handle each of the contained errors in
 order. If all contained errors can be handled, ``handleErrors`` will return
 ``Error::success()``, otherwise ``handleErrors`` will concatenate the remaining
 errors and return the resulting ``ErrorList``.
@@ -2059,6 +2194,22 @@ reverse) is O(1) worst case.  Testing and setting bits within 128 bits (depends
 on size) of the current bit is also O(1).  As a general statement,
 testing/setting bits in a SparseBitVector is O(distance away from last set bit).
 
+.. _debugging:
+
+Debugging
+=========
+
+A handful of `GDB pretty printers
+<https://sourceware.org/gdb/onlinedocs/gdb/Pretty-Printing.html>`__ are
+provided for some of the core LLVM libraries. To use them, execute the
+following (or add it to your ``~/.gdbinit``)::
+
+  source /path/to/llvm/src/utils/gdb-scripts/prettyprinters.py
+
+It also might be handy to enable the `print pretty
+<http://ftp.gnu.org/old-gnu/Manuals/gdb/html_node/gdb_57.html>`__ option to
+avoid data structures being printed as a big block of text.
+
 .. _common:
 
 Helpful Hints for Common Operations
@@ -2752,7 +2903,7 @@ Another way is to only call ``getPointerToFunction()`` from the
 
 When the JIT is configured to compile lazily (using
 ``ExecutionEngine::DisableLazyCompilation(false)``), there is currently a `race
-condition <http://llvm.org/bugs/show_bug.cgi?id=5184>`_ in updating call sites
+condition <https://bugs.llvm.org/show_bug.cgi?id=5184>`_ in updating call sites
 after a function is lazily-jitted.  It's still possible to use the lazy JIT in a
 threaded program if you ensure that only one thread at a time can call any
 particular lazy stub and that the JIT lock guards any IR access, but we suggest
@@ -3141,20 +3292,20 @@ Important Derived Types
   * ``unsigned getBitWidth() const``: Get the bit width of an integer type.
 
 ``SequentialType``
-  This is subclassed by ArrayType, PointerType and VectorType.
+  This is subclassed by ArrayType and VectorType.
 
   * ``const Type * getElementType() const``: Returns the type of each
     of the elements in the sequential type.
+
+  * ``uint64_t getNumElements() const``: Returns the number of elements
+    in the sequential type.
 
 ``ArrayType``
   This is a subclass of SequentialType and defines the interface for array
   types.
 
-  * ``unsigned getNumElements() const``: Returns the number of elements
-    in the array.
-
 ``PointerType``
-  Subclass of SequentialType for pointer types.
+  Subclass of Type for pointer types.
 
 ``VectorType``
   Subclass of SequentialType for vector types.  A vector type is similar to an
