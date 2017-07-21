@@ -14,24 +14,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
-#include "AMDGPUIntrinsicInfo.h"
 #include "AMDGPUSubtarget.h"
 #include "AMDGPUTargetMachine.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/DivergenceAnalysis.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
@@ -49,7 +49,6 @@ namespace {
 
 class AMDGPUCodeGenPrepare : public FunctionPass,
                              public InstVisitor<AMDGPUCodeGenPrepare, bool> {
-  const GCNTargetMachine *TM;
   const SISubtarget *ST = nullptr;
   DivergenceAnalysis *DA = nullptr;
   Module *Mod = nullptr;
@@ -128,8 +127,7 @@ class AMDGPUCodeGenPrepare : public FunctionPass,
 public:
   static char ID;
 
-  AMDGPUCodeGenPrepare(const TargetMachine *TM = nullptr) :
-    FunctionPass(ID), TM(static_cast<const GCNTargetMachine *>(TM)) {}
+  AMDGPUCodeGenPrepare() : FunctionPass(ID) {}
 
   bool visitFDiv(BinaryOperator &I);
 
@@ -181,12 +179,20 @@ bool AMDGPUCodeGenPrepare::isSigned(const SelectInst &I) const {
 }
 
 bool AMDGPUCodeGenPrepare::needsPromotionToI32(const Type *T) const {
-  if (T->isIntegerTy() && T->getIntegerBitWidth() > 1 &&
-      T->getIntegerBitWidth() <= 16)
+  const IntegerType *IntTy = dyn_cast<IntegerType>(T);
+  if (IntTy && IntTy->getBitWidth() > 1 && IntTy->getBitWidth() <= 16)
     return true;
-  if (!T->isVectorTy())
-    return false;
-  return needsPromotionToI32(cast<VectorType>(T)->getElementType());
+
+  if (const VectorType *VT = dyn_cast<VectorType>(T)) {
+    // TODO: The set of packed operations is more limited, so may want to
+    // promote some anyway.
+    if (ST->hasVOP3PInsts())
+      return false;
+
+    return needsPromotionToI32(VT->getElementType());
+  }
+
+  return false;
 }
 
 // Return true if the op promoted to i32 should have nsw set.
@@ -374,16 +380,16 @@ bool AMDGPUCodeGenPrepare::visitFDiv(BinaryOperator &FDiv) {
   FastMathFlags FMF = FPOp->getFastMathFlags();
   bool UnsafeDiv = HasUnsafeFPMath || FMF.unsafeAlgebra() ||
                                       FMF.allowReciprocal();
-  if (ST->hasFP32Denormals() && !UnsafeDiv)
+
+  // With UnsafeDiv node will be optimized to just rcp and mul.
+  if (ST->hasFP32Denormals() || UnsafeDiv)
     return false;
 
   IRBuilder<> Builder(FDiv.getParent(), std::next(FDiv.getIterator()), FPMath);
   Builder.setFastMathFlags(FMF);
   Builder.SetCurrentDebugLocation(FDiv.getDebugLoc());
 
-  const AMDGPUIntrinsicInfo *II = TM->getIntrinsicInfo();
-  Function *Decl
-    = II->getDeclaration(Mod, AMDGPUIntrinsic::amdgcn_fdiv_fast, {});
+  Function *Decl = Intrinsic::getDeclaration(Mod, Intrinsic::amdgcn_fdiv_fast);
 
   Value *Num = FDiv.getOperand(0);
   Value *Den = FDiv.getOperand(1);
@@ -482,10 +488,15 @@ bool AMDGPUCodeGenPrepare::doInitialization(Module &M) {
 }
 
 bool AMDGPUCodeGenPrepare::runOnFunction(Function &F) {
-  if (!TM || skipFunction(F))
+  if (skipFunction(F))
     return false;
 
-  ST = &TM->getSubtarget<SISubtarget>(F);
+  auto *TPC = getAnalysisIfAvailable<TargetPassConfig>();
+  if (!TPC)
+    return false;
+
+  const TargetMachine &TM = TPC->getTM<TargetMachine>();
+  ST = &TM.getSubtarget<SISubtarget>(F);
   DA = &getAnalysis<DivergenceAnalysis>();
   HasUnsafeFPMath = hasUnsafeFPMath(F);
 
@@ -502,14 +513,14 @@ bool AMDGPUCodeGenPrepare::runOnFunction(Function &F) {
   return MadeChange;
 }
 
-INITIALIZE_TM_PASS_BEGIN(AMDGPUCodeGenPrepare, DEBUG_TYPE,
+INITIALIZE_PASS_BEGIN(AMDGPUCodeGenPrepare, DEBUG_TYPE,
                       "AMDGPU IR optimizations", false, false)
 INITIALIZE_PASS_DEPENDENCY(DivergenceAnalysis)
-INITIALIZE_TM_PASS_END(AMDGPUCodeGenPrepare, DEBUG_TYPE,
-                       "AMDGPU IR optimizations", false, false)
+INITIALIZE_PASS_END(AMDGPUCodeGenPrepare, DEBUG_TYPE, "AMDGPU IR optimizations",
+                    false, false)
 
 char AMDGPUCodeGenPrepare::ID = 0;
 
-FunctionPass *llvm::createAMDGPUCodeGenPreparePass(const GCNTargetMachine *TM) {
-  return new AMDGPUCodeGenPrepare(TM);
+FunctionPass *llvm::createAMDGPUCodeGenPreparePass() {
+  return new AMDGPUCodeGenPrepare();
 }

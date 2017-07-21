@@ -52,36 +52,18 @@ namespace HexagonISD {
 
       COMBINE,
       PACKHL,
-      VSPLATB,
-      VSPLATH,
-      SHUFFEB,
-      SHUFFEH,
-      SHUFFOB,
-      SHUFFOH,
-      VSXTBH,
-      VSXTBW,
-      VSRAW,
-      VSRAH,
-      VSRLW,
-      VSRLH,
-      VSHLW,
-      VSHLH,
-      VCMPBEQ,
-      VCMPBGT,
-      VCMPBGTU,
-      VCMPHEQ,
-      VCMPHGT,
-      VCMPHGTU,
-      VCMPWEQ,
-      VCMPWGT,
-      VCMPWGTU,
+      VSPLAT,
+      VASL,
+      VASR,
+      VLSR,
 
       INSERT,
       INSERTRP,
       EXTRACTU,
       EXTRACTURP,
       VCOMBINE,
-      VPACK,
+      VPACKE,
+      VPACKO,
       TC_RETURN,
       EH_RETURN,
       DCFETCH,
@@ -183,14 +165,18 @@ namespace HexagonISD {
     SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerATOMIC_FENCE(SDValue Op, SelectionDAG& DAG) const;
     SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerLOAD(SDValue Op, SelectionDAG &DAG) const;
+
+    bool CanLowerReturn(CallingConv::ID CallConv,
+                        MachineFunction &MF, bool isVarArg,
+                        const SmallVectorImpl<ISD::OutputArg> &Outs,
+                        LLVMContext &Context) const override;
 
     SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
                         const SmallVectorImpl<ISD::OutputArg> &Outs,
                         const SmallVectorImpl<SDValue> &OutVals,
                         const SDLoc &dl, SelectionDAG &DAG) const override;
 
-    bool mayBeEmittedAsTailCall(CallInst *CI) const override;
+    bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
 
     /// If a physical register, this returns the register that receives the
     /// exception address on entry to an EH pad.

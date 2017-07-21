@@ -11,17 +11,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/CodeGen/LiveRegMatrix.h"
 #include "RegisterCoalescer.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
-#include "llvm/CodeGen/LiveRegMatrix.h"
-#include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/CodeGen/LiveIntervalUnion.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/Pass.h"
+#include "llvm/CodeGen/VirtRegMap.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetRegisterInfo.h"
@@ -175,10 +175,10 @@ bool LiveRegMatrix::checkRegUnitInterference(LiveInterval &VirtReg,
   return Result;
 }
 
-LiveIntervalUnion::Query &LiveRegMatrix::query(LiveInterval &VirtReg,
+LiveIntervalUnion::Query &LiveRegMatrix::query(const LiveRange &LR,
                                                unsigned RegUnit) {
   LiveIntervalUnion::Query &Q = Queries[RegUnit];
-  Q.init(UserTag, &VirtReg, &Matrix[RegUnit]);
+  Q.init(UserTag, LR, Matrix[RegUnit]);
   return Q;
 }
 
@@ -196,9 +196,12 @@ LiveRegMatrix::checkInterference(LiveInterval &VirtReg, unsigned PhysReg) {
     return IK_RegUnit;
 
   // Check the matrix for virtual register interference.
-  for (MCRegUnitIterator Units(PhysReg, TRI); Units.isValid(); ++Units)
-    if (query(VirtReg, *Units).checkInterference())
-      return IK_VirtReg;
+  bool Interference = foreachUnit(TRI, VirtReg, PhysReg,
+                                  [&](unsigned Unit, const LiveRange &LR) {
+    return query(LR, Unit).checkInterference();
+  });
+  if (Interference)
+    return IK_VirtReg;
 
   return IK_Free;
 }

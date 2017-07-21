@@ -1,4 +1,4 @@
-//===- HashTable.cpp - PDB Hash Table ---------------------------*- C++ -*-===//
+//===- HashTable.cpp - PDB Hash Table -------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,12 +8,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/DebugInfo/PDB/Native/HashTable.h"
-
 #include "llvm/ADT/Optional.h"
-#include "llvm/ADT/SparseBitVector.h"
 #include "llvm/DebugInfo/PDB/Native/RawError.h"
-
-#include <assert.h>
+#include "llvm/Support/BinaryStreamReader.h"
+#include "llvm/Support/BinaryStreamWriter.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/MathExtras.h"
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <utility>
 
 using namespace llvm;
 using namespace llvm::pdb;
@@ -22,7 +26,7 @@ HashTable::HashTable() : HashTable(8) {}
 
 HashTable::HashTable(uint32_t Capacity) { Buckets.resize(Capacity); }
 
-Error HashTable::load(msf::StreamReader &Stream) {
+Error HashTable::load(BinaryStreamReader &Stream) {
   const Header *H;
   if (auto EC = Stream.readObject(H))
     return EC;
@@ -48,9 +52,9 @@ Error HashTable::load(msf::StreamReader &Stream) {
                                 "Present bit vector interesects deleted!");
 
   for (uint32_t P : Present) {
-    if (auto EC = Stream.readInteger(Buckets[P].first, llvm::support::little))
+    if (auto EC = Stream.readInteger(Buckets[P].first))
       return EC;
-    if (auto EC = Stream.readInteger(Buckets[P].second, llvm::support::little))
+    if (auto EC = Stream.readInteger(Buckets[P].second))
       return EC;
   }
 
@@ -77,7 +81,7 @@ uint32_t HashTable::calculateSerializedLength() const {
   return Size;
 }
 
-Error HashTable::commit(msf::StreamWriter &Writer) const {
+Error HashTable::commit(BinaryStreamWriter &Writer) const {
   Header H;
   H.Size = size();
   H.Capacity = capacity();
@@ -91,9 +95,9 @@ Error HashTable::commit(msf::StreamWriter &Writer) const {
     return EC;
 
   for (const auto &Entry : *this) {
-    if (auto EC = Writer.writeInteger(Entry.first, llvm::support::little))
+    if (auto EC = Writer.writeInteger(Entry.first))
       return EC;
-    if (auto EC = Writer.writeInteger(Entry.second, llvm::support::little))
+    if (auto EC = Writer.writeInteger(Entry.second))
       return EC;
   }
   return Error::success();
@@ -106,9 +110,11 @@ void HashTable::clear() {
 }
 
 uint32_t HashTable::capacity() const { return Buckets.size(); }
+
 uint32_t HashTable::size() const { return Present.count(); }
 
 HashTableIterator HashTable::begin() const { return HashTableIterator(*this); }
+
 HashTableIterator HashTable::end() const {
   return HashTableIterator(*this, 0, true);
 }
@@ -209,10 +215,10 @@ void HashTable::grow() {
   assert(size() == S);
 }
 
-Error HashTable::readSparseBitVector(msf::StreamReader &Stream,
+Error HashTable::readSparseBitVector(BinaryStreamReader &Stream,
                                      SparseBitVector<> &V) {
   uint32_t NumWords;
-  if (auto EC = Stream.readInteger(NumWords, llvm::support::little))
+  if (auto EC = Stream.readInteger(NumWords))
     return joinErrors(
         std::move(EC),
         make_error<RawError>(raw_error_code::corrupt_file,
@@ -220,7 +226,7 @@ Error HashTable::readSparseBitVector(msf::StreamReader &Stream,
 
   for (uint32_t I = 0; I != NumWords; ++I) {
     uint32_t Word;
-    if (auto EC = Stream.readInteger(Word, llvm::support::little))
+    if (auto EC = Stream.readInteger(Word))
       return joinErrors(std::move(EC),
                         make_error<RawError>(raw_error_code::corrupt_file,
                                              "Expected hash table word"));
@@ -231,11 +237,11 @@ Error HashTable::readSparseBitVector(msf::StreamReader &Stream,
   return Error::success();
 }
 
-Error HashTable::writeSparseBitVector(msf::StreamWriter &Writer,
+Error HashTable::writeSparseBitVector(BinaryStreamWriter &Writer,
                                       SparseBitVector<> &Vec) {
   int ReqBits = Vec.find_last() + 1;
   uint32_t NumWords = alignTo(ReqBits, sizeof(uint32_t)) / sizeof(uint32_t);
-  if (auto EC = Writer.writeInteger(NumWords, llvm::support::little))
+  if (auto EC = Writer.writeInteger(NumWords))
     return joinErrors(
         std::move(EC),
         make_error<RawError>(raw_error_code::corrupt_file,
@@ -248,7 +254,7 @@ Error HashTable::writeSparseBitVector(msf::StreamWriter &Writer,
       if (Vec.test(Idx))
         Word |= (1 << WordIdx);
     }
-    if (auto EC = Writer.writeInteger(Word, llvm::support::little))
+    if (auto EC = Writer.writeInteger(Word))
       return joinErrors(std::move(EC), make_error<RawError>(
                                            raw_error_code::corrupt_file,
                                            "Could not write linear map word"));

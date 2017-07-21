@@ -40,7 +40,23 @@ Non-comprehensive list of changes in this release
    functionality, or simply have a lot to talk about), see the `NOTE` below
    for adding a new subsection.
 
-* ... next change ...
+* LLVM's ``WeakVH`` has been renamed to ``WeakTrackingVH`` and a new ``WeakVH``
+  has been introduced.  The new ``WeakVH`` nulls itself out on deletion, but
+  does not track values across RAUW.
+  
+* A new library named ``BinaryFormat`` has been created which holds a collection
+  of code which previously lived in ``Support``.  This includes the
+  ``file_magic`` structure and ``identify_magic`` functions, as well as all the
+  structure and type definitions for DWARF, ELF, COFF, WASM, and MachO file
+  formats.
+  
+* The tool ``llvm-pdbdump`` has been renamed ``llvm-pdbutil`` to better reflect
+  its nature as a general purpose PDB manipulation / diagnostics tool that does
+  more than just dumping contents.
+  
+* The ``BBVectorize`` pass has been removed. It was fully replaced and no
+  longer used back in 2014 but we didn't get around to removing it. Now it is
+  gone. The SLP vectorizer is the suggested non-loop vectorization pass.
 
 .. NOTE
    If you would like to document a larger change, then you can add a
@@ -54,6 +70,12 @@ Non-comprehensive list of changes in this release
 
 Changes to the LLVM IR
 ----------------------
+
+* The datalayout string may now indicate an address space to use for
+the pointer type of alloca rather than the default of 0.
+
+* Added speculatable attribute indicating a function which does has no
+  side-effects which could inhibit hoisting of calls.
 
 Changes to the ARM Backend
 --------------------------
@@ -80,7 +102,7 @@ Changes to the X86 Target
 Changes to the AMDGPU Target
 -----------------------------
 
- During this release ...
+* Initial gfx9 support
 
 Changes to the AVR Target
 -----------------------------
@@ -91,6 +113,15 @@ Changes to the OCaml bindings
 -----------------------------
 
  During this release ...
+
+
+Changes to the C API
+--------------------
+
+* Deprecated the ``LLVMAddBBVectorizePass`` interface since the ``BBVectorize``
+  pass has been removed. It is now a no-op and will be removed in the next
+  release. Use ``LLVMAddSLPVectorizePass`` instead to get the supported SLP
+  vectorizer.
 
 
 External Open Source Projects Using LLVM 5

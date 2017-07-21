@@ -12,12 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "R600InstrInfo.h"
 #include "AMDGPU.h"
 #include "AMDGPUInstrInfo.h"
 #include "AMDGPUSubtarget.h"
 #include "R600Defines.h"
 #include "R600FrameLowering.h"
-#include "R600InstrInfo.h"
 #include "R600RegisterInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/BitVector.h"
@@ -35,8 +35,8 @@
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include <algorithm>
 #include <cassert>
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <utility>
 #include <vector>
@@ -869,7 +869,7 @@ bool R600InstrInfo::isPredicated(const MachineInstr &MI) const {
   }
 }
 
-bool R600InstrInfo::isPredicable(MachineInstr &MI) const {
+bool R600InstrInfo::isPredicable(const MachineInstr &MI) const {
   // XXX: KILL* instructions can be predicated, but they must be the last
   // instruction in a clause, so this means any instructions after them cannot
   // be predicated.  Until we have proper support for instruction clauses in the
@@ -880,7 +880,7 @@ bool R600InstrInfo::isPredicable(MachineInstr &MI) const {
   } else if (MI.getOpcode() == AMDGPU::CF_ALU) {
     // If the clause start in the middle of MBB then the MBB has more
     // than a single clause, unable to predicate several clauses.
-    if (MI.getParent()->begin() != MachineBasicBlock::iterator(MI))
+    if (MI.getParent()->begin() != MachineBasicBlock::const_iterator(MI))
       return false;
     // TODO: We don't support KC merging atm
     return MI.getOperand(3).getImm() == 0 && MI.getOperand(4).getImm() == 0;
@@ -893,7 +893,7 @@ bool R600InstrInfo::isPredicable(MachineInstr &MI) const {
 
 bool
 R600InstrInfo::isProfitableToIfCvt(MachineBasicBlock &MBB,
-                                   unsigned NumCyles,
+                                   unsigned NumCycles,
                                    unsigned ExtraPredCycles,
                                    BranchProbability Probability) const{
   return true;
@@ -912,7 +912,7 @@ R600InstrInfo::isProfitableToIfCvt(MachineBasicBlock &TMBB,
 
 bool
 R600InstrInfo::isProfitableToDupForIfCvt(MachineBasicBlock &MBB,
-                                         unsigned NumCyles,
+                                         unsigned NumCycles,
                                          BranchProbability Probability)
                                          const {
   return true;

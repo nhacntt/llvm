@@ -41,6 +41,7 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Object/Wasm.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -485,10 +486,13 @@ void SourcePrinter::printSourceLine(raw_ostream &OS, uint64_t Address,
     auto FileBuffer = SourceCache.find(LineInfo.FileName);
     if (FileBuffer != SourceCache.end()) {
       auto LineBuffer = LineCache.find(LineInfo.FileName);
-      if (LineBuffer != LineCache.end())
+      if (LineBuffer != LineCache.end()) {
+        if (LineInfo.Line > LineBuffer->second.size())
+          return;
         // Vector begins at 0, line numbers are non-zero
         OS << Delimiter << LineBuffer->second[LineInfo.Line - 1].ltrim()
            << "\n";
+      }
     }
   }
   OldLineInfo = LineInfo;
@@ -593,6 +597,9 @@ public:
   void printInst(MCInstPrinter &IP, const MCInst *MI, ArrayRef<uint8_t> Bytes,
                  uint64_t Address, raw_ostream &OS, StringRef Annot,
                  MCSubtargetInfo const &STI, SourcePrinter *SP) override {
+    if (SP && (PrintSource || PrintLines))
+      SP->printSourceLine(OS, Address);
+
     if (!MI) {
       OS << " <unknown>";
       return;
@@ -863,7 +870,10 @@ static void printRelocationTargetName(const MachOObjectFile *O,
   bool isExtern = O->getPlainRelocationExternal(RE);
   uint64_t Val = O->getPlainRelocationSymbolNum(RE);
 
-  if (isExtern) {
+  if (O->getAnyRelocationType(RE) == MachO::ARM64_RELOC_ADDEND) {
+    fmt << format("0x%x", Val);
+    return;
+  } else if (isExtern) {
     symbol_iterator SI = O->symbol_begin();
     advance(SI, Val);
     Expected<StringRef> SOrErr = SI->getName();
@@ -878,6 +888,18 @@ static void printRelocationTargetName(const MachOObjectFile *O,
   }
 
   fmt << S;
+}
+
+static std::error_code getRelocationValueString(const WasmObjectFile *Obj,
+                                                const RelocationRef &RelRef,
+                                                SmallVectorImpl<char> &Result) {
+  const wasm::WasmRelocation& Rel = Obj->getWasmRelocation(RelRef);
+  std::string fmtbuf;
+  raw_string_ostream fmt(fmtbuf);
+  fmt << Rel.Index << (Rel.Addend < 0 ? "" : "+") << Rel.Addend;
+  fmt.flush();
+  Result.append(fmtbuf.begin(), fmtbuf.end());
+  return std::error_code();
 }
 
 static std::error_code getRelocationValueString(const MachOObjectFile *Obj,
@@ -1013,7 +1035,7 @@ static std::error_code getRelocationValueString(const MachOObjectFile *Obj,
       case MachO::ARM_RELOC_HALF_SECTDIFF: {
         // Half relocations steal a bit from the length field to encode
         // whether this is an upper16 or a lower16 relocation.
-        bool isUpper = Obj->getAnyRelocationLength(RE) >> 1;
+        bool isUpper = (Obj->getAnyRelocationLength(RE) & 0x1) == 1;
 
         if (isUpper)
           fmt << ":upper16:(";
@@ -1065,8 +1087,11 @@ static std::error_code getRelocationValueString(const RelocationRef &Rel,
     return getRelocationValueString(ELF, Rel, Result);
   if (auto *COFF = dyn_cast<COFFObjectFile>(Obj))
     return getRelocationValueString(COFF, Rel, Result);
-  auto *MachO = cast<MachOObjectFile>(Obj);
-  return getRelocationValueString(MachO, Rel, Result);
+  if (auto *Wasm = dyn_cast<WasmObjectFile>(Obj))
+    return getRelocationValueString(Wasm, Rel, Result);
+  if (auto *MachO = dyn_cast<MachOObjectFile>(Obj))
+    return getRelocationValueString(MachO, Rel, Result);
+  llvm_unreachable("unknown object file format");
 }
 
 /// @brief Indicates whether this relocation should hidden when listing
@@ -1882,9 +1907,9 @@ void llvm::printExportsTrie(const ObjectFile *o) {
   }
 }
 
-void llvm::printRebaseTable(const ObjectFile *o) {
+void llvm::printRebaseTable(ObjectFile *o) {
   outs() << "Rebase table:\n";
-  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+  if (MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
     printMachORebaseTable(MachO);
   else {
     errs() << "This operation is only currently supported "
@@ -1893,9 +1918,9 @@ void llvm::printRebaseTable(const ObjectFile *o) {
   }
 }
 
-void llvm::printBindTable(const ObjectFile *o) {
+void llvm::printBindTable(ObjectFile *o) {
   outs() << "Bind table:\n";
-  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+  if (MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
     printMachOBindTable(MachO);
   else {
     errs() << "This operation is only currently supported "
@@ -1904,9 +1929,9 @@ void llvm::printBindTable(const ObjectFile *o) {
   }
 }
 
-void llvm::printLazyBindTable(const ObjectFile *o) {
+void llvm::printLazyBindTable(ObjectFile *o) {
   outs() << "Lazy bind table:\n";
-  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+  if (MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
     printMachOLazyBindTable(MachO);
   else {
     errs() << "This operation is only currently supported "
@@ -1915,9 +1940,9 @@ void llvm::printLazyBindTable(const ObjectFile *o) {
   }
 }
 
-void llvm::printWeakBindTable(const ObjectFile *o) {
+void llvm::printWeakBindTable(ObjectFile *o) {
   outs() << "Weak bind table:\n";
-  if (const MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
+  if (MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(o))
     printMachOWeakBindTable(MachO);
   else {
     errs() << "This operation is only currently supported "
@@ -2015,7 +2040,7 @@ static void printPrivateFileHeaders(const ObjectFile *o, bool onlyFirst) {
   report_error(o->getFileName(), "Invalid/Unsupported object file format");
 }
 
-static void DumpObject(const ObjectFile *o, const Archive *a = nullptr) {
+static void DumpObject(ObjectFile *o, const Archive *a = nullptr) {
   StringRef ArchiveName = a != nullptr ? a->getFileName() : "";
   // Avoid other output when using a raw option.
   if (!RawClangAST) {
@@ -2058,7 +2083,10 @@ static void DumpObject(const ObjectFile *o, const Archive *a = nullptr) {
   if (DwarfDumpType != DIDT_Null) {
     std::unique_ptr<DIContext> DICtx(new DWARFContextInMemory(*o));
     // Dump the complete DWARF structure.
-    DICtx->dump(outs(), DwarfDumpType, true /* DumpEH */);
+    DIDumpOptions DumpOpts;
+    DumpOpts.DumpType = DwarfDumpType;
+    DumpOpts.DumpEH = true;
+    DICtx->dump(outs(), DumpOpts);
   }
 }
 

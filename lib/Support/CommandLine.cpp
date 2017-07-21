@@ -24,6 +24,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Config/config.h"
@@ -123,7 +124,7 @@ public:
   void ResetAllOptionOccurrences();
 
   bool ParseCommandLineOptions(int argc, const char *const *argv,
-                               StringRef Overview, bool IgnoreErrors);
+                               StringRef Overview, raw_ostream *Errs = nullptr);
 
   void addLiteralOption(Option &Opt, SubCommand *SC, StringRef Name) {
     if (Opt.hasArgStr())
@@ -1013,9 +1014,9 @@ void cl::ParseEnvironmentOptions(const char *progName, const char *envVar,
 }
 
 bool cl::ParseCommandLineOptions(int argc, const char *const *argv,
-                                 StringRef Overview, bool IgnoreErrors) {
+                                 StringRef Overview, raw_ostream *Errs) {
   return GlobalParser->ParseCommandLineOptions(argc, argv, Overview,
-                                               IgnoreErrors);
+                                               Errs);
 }
 
 void CommandLineParser::ResetAllOptionOccurrences() {
@@ -1030,7 +1031,7 @@ void CommandLineParser::ResetAllOptionOccurrences() {
 bool CommandLineParser::ParseCommandLineOptions(int argc,
                                                 const char *const *argv,
                                                 StringRef Overview,
-                                                bool IgnoreErrors) {
+                                                raw_ostream *Errs) {
   assert(hasOptions() && "No options specified!");
 
   // Expand response files.
@@ -1045,6 +1046,9 @@ bool CommandLineParser::ParseCommandLineOptions(int argc,
   ProgramName = sys::path::filename(StringRef(argv[0]));
 
   ProgramOverview = Overview;
+  bool IgnoreErrors = Errs;
+  if (!Errs)
+    Errs = &errs();
   bool ErrorParsing = false;
 
   // Check out the positional arguments to collect information about them.
@@ -1097,15 +1101,14 @@ bool CommandLineParser::ParseCommandLineOptions(int argc,
         // not specified after an option that eats all extra arguments, or this
         // one will never get any!
         //
-        if (!IgnoreErrors) {
+        if (!IgnoreErrors)
           Opt->error("error - option can never match, because "
                      "another positional argument will match an "
                      "unbounded number of values, and this option"
                      " does not require a value!");
-          errs() << ProgramName << ": CommandLine Error: Option '"
-                 << Opt->ArgStr << "' is all messed up!\n";
-          errs() << PositionalOpts.size();
-        }
+        *Errs << ProgramName << ": CommandLine Error: Option '" << Opt->ArgStr
+              << "' is all messed up!\n";
+        *Errs << PositionalOpts.size();
         ErrorParsing = true;
       }
       UnboundedFound |= EatsUnboundedNumberOfValues(Opt);
@@ -1200,15 +1203,13 @@ bool CommandLineParser::ParseCommandLineOptions(int argc,
 
     if (!Handler) {
       if (SinkOpts.empty()) {
-        if (!IgnoreErrors) {
-          errs() << ProgramName << ": Unknown command line argument '"
-                 << argv[i] << "'.  Try: '" << argv[0] << " -help'\n";
+        *Errs << ProgramName << ": Unknown command line argument '" << argv[i]
+              << "'.  Try: '" << argv[0] << " -help'\n";
 
-          if (NearestHandler) {
-            // If we know a near match, report it as well.
-            errs() << ProgramName << ": Did you mean '-" << NearestHandlerString
-                   << "'?\n";
-          }
+        if (NearestHandler) {
+          // If we know a near match, report it as well.
+          *Errs << ProgramName << ": Did you mean '-" << NearestHandlerString
+                 << "'?\n";
         }
 
         ErrorParsing = true;
@@ -1231,22 +1232,18 @@ bool CommandLineParser::ParseCommandLineOptions(int argc,
 
   // Check and handle positional arguments now...
   if (NumPositionalRequired > PositionalVals.size()) {
-    if (!IgnoreErrors) {
-      errs() << ProgramName
+      *Errs << ProgramName
              << ": Not enough positional command line arguments specified!\n"
              << "Must specify at least " << NumPositionalRequired
              << " positional argument" << (NumPositionalRequired > 1 ? "s" : "")
-             << ": See: " << argv[0] << " - help\n";
-    }
+             << ": See: " << argv[0] << " -help\n";
 
     ErrorParsing = true;
   } else if (!HasUnlimitedPositionals &&
              PositionalVals.size() > PositionalOpts.size()) {
-    if (!IgnoreErrors) {
-      errs() << ProgramName << ": Too many positional arguments specified!\n"
-             << "Can specify at most " << PositionalOpts.size()
-             << " positional arguments: See: " << argv[0] << " -help\n";
-    }
+    *Errs << ProgramName << ": Too many positional arguments specified!\n"
+          << "Can specify at most " << PositionalOpts.size()
+          << " positional arguments: See: " << argv[0] << " -help\n";
     ErrorParsing = true;
 
   } else if (!ConsumeAfterOpt) {
@@ -1526,13 +1523,9 @@ bool parser<unsigned long long>::parse(Option &O, StringRef ArgName,
 // parser<double>/parser<float> implementation
 //
 static bool parseDouble(Option &O, StringRef Arg, double &Value) {
-  SmallString<32> TmpStr(Arg.begin(), Arg.end());
-  const char *ArgStart = TmpStr.c_str();
-  char *End;
-  Value = strtod(ArgStart, &End);
-  if (*End != 0)
-    return O.error("'" + Arg + "' value invalid for floating point argument!");
-  return false;
+  if (to_float(Arg, Value))
+    return false;
+  return O.error("'" + Arg + "' value invalid for floating point argument!");
 }
 
 bool parser<double>::parse(Option &O, StringRef ArgName, StringRef Arg,
@@ -1856,10 +1849,11 @@ public:
 
   // Helper function for printOptions().
   // It shall return a negative value if A's name should be lexicographically
-  // ordered before B's name. It returns a value greater equal zero otherwise.
+  // ordered before B's name. It returns a value greater than zero if B's name
+  // should be ordered before A's name, and it returns 0 otherwise.
   static int OptionCategoryCompare(OptionCategory *const *A,
                                    OptionCategory *const *B) {
-    return (*A)->getName() == (*B)->getName();
+    return (*A)->getName().compare((*B)->getName());
   }
 
   // Make sure we inherit our base class's operator=()
@@ -2045,9 +2039,9 @@ void CommandLineParser::printOptionValues() {
     Opts[i].second->printOptionValue(MaxArgLen, PrintAllOptions);
 }
 
-static void (*OverrideVersionPrinter)() = nullptr;
+static VersionPrinterTy OverrideVersionPrinter = nullptr;
 
-static std::vector<void (*)()> *ExtraVersionPrinters = nullptr;
+static std::vector<VersionPrinterTy> *ExtraVersionPrinters = nullptr;
 
 namespace {
 class VersionPrinter {
@@ -2072,19 +2066,22 @@ public:
 #ifndef NDEBUG
     OS << " with assertions";
 #endif
+#if LLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO
     std::string CPU = sys::getHostCPUName();
     if (CPU == "generic")
       CPU = "(unknown)";
     OS << ".\n"
        << "  Default target: " << sys::getDefaultTargetTriple() << '\n'
-       << "  Host CPU: " << CPU << '\n';
+       << "  Host CPU: " << CPU;
+#endif
+    OS << '\n';
   }
   void operator=(bool OptionWasSpecified) {
     if (!OptionWasSpecified)
       return;
 
     if (OverrideVersionPrinter != nullptr) {
-      (*OverrideVersionPrinter)();
+      OverrideVersionPrinter(outs());
       exit(0);
     }
     print();
@@ -2093,10 +2090,8 @@ public:
     // information.
     if (ExtraVersionPrinters != nullptr) {
       outs() << '\n';
-      for (std::vector<void (*)()>::iterator I = ExtraVersionPrinters->begin(),
-                                             E = ExtraVersionPrinters->end();
-           I != E; ++I)
-        (*I)();
+      for (auto I : *ExtraVersionPrinters)
+        I(outs());
     }
 
     exit(0);
@@ -2134,11 +2129,11 @@ void cl::PrintHelpMessage(bool Hidden, bool Categorized) {
 /// Utility function for printing version number.
 void cl::PrintVersionMessage() { VersionPrinterInstance.print(); }
 
-void cl::SetVersionPrinter(void (*func)()) { OverrideVersionPrinter = func; }
+void cl::SetVersionPrinter(VersionPrinterTy func) { OverrideVersionPrinter = func; }
 
-void cl::AddExtraVersionPrinter(void (*func)()) {
+void cl::AddExtraVersionPrinter(VersionPrinterTy func) {
   if (!ExtraVersionPrinters)
-    ExtraVersionPrinters = new std::vector<void (*)()>;
+    ExtraVersionPrinters = new std::vector<VersionPrinterTy>;
 
   ExtraVersionPrinters->push_back(func);
 }
@@ -2182,5 +2177,6 @@ void cl::ResetAllOptionOccurrences() {
 
 void LLVMParseCommandLineOptions(int argc, const char *const *argv,
                                  const char *Overview) {
-  llvm::cl::ParseCommandLineOptions(argc, argv, StringRef(Overview), true);
+  llvm::cl::ParseCommandLineOptions(argc, argv, StringRef(Overview),
+                                    &llvm::nulls());
 }

@@ -458,7 +458,7 @@ unsigned AArch64FastISel::materializeGV(const GlobalValue *GV) {
 
   // MachO still uses GOT for large code-model accesses, but ELF requires
   // movz/movk sequences, which FastISel doesn't handle yet.
-  if (TM.getCodeModel() != CodeModel::Small && !Subtarget->isTargetMachO())
+  if (!Subtarget->useSmallAddressing() && !Subtarget->isTargetMachO())
     return 0;
 
   unsigned char OpFlags = Subtarget->ClassifyGlobalReference(GV, TM);
@@ -1282,6 +1282,10 @@ unsigned AArch64FastISel::emitAddSub_rr(bool UseAdd, MVT RetVT, unsigned LHSReg,
                                         bool WantResult) {
   assert(LHSReg && RHSReg && "Invalid register number.");
 
+  if (LHSReg == AArch64::SP || LHSReg == AArch64::WSP ||
+      RHSReg == AArch64::SP || RHSReg == AArch64::WSP)
+    return 0;
+
   if (RetVT != MVT::i32 && RetVT != MVT::i64)
     return 0;
 
@@ -1362,6 +1366,8 @@ unsigned AArch64FastISel::emitAddSub_rs(bool UseAdd, MVT RetVT, unsigned LHSReg,
                                         uint64_t ShiftImm, bool SetFlags,
                                         bool WantResult) {
   assert(LHSReg && RHSReg && "Invalid register number.");
+  assert(LHSReg != AArch64::SP && LHSReg != AArch64::WSP &&
+         RHSReg != AArch64::SP && RHSReg != AArch64::WSP);
 
   if (RetVT != MVT::i32 && RetVT != MVT::i64)
     return 0;
@@ -1403,6 +1409,8 @@ unsigned AArch64FastISel::emitAddSub_rx(bool UseAdd, MVT RetVT, unsigned LHSReg,
                                         uint64_t ShiftImm, bool SetFlags,
                                         bool WantResult) {
   assert(LHSReg && RHSReg && "Invalid register number.");
+  assert(LHSReg != AArch64::XZR && LHSReg != AArch64::WZR &&
+         RHSReg != AArch64::XZR && RHSReg != AArch64::WZR);
 
   if (RetVT != MVT::i32 && RetVT != MVT::i64)
     return 0;
@@ -2106,7 +2114,7 @@ bool AArch64FastISel::emitStore(MVT VT, unsigned SrcReg, Address Addr,
 
   switch (VT.SimpleTy) {
   default: llvm_unreachable("Unexpected value type.");
-  case MVT::i1:  VTIsi1 = true;
+  case MVT::i1:  VTIsi1 = true; LLVM_FALLTHROUGH;
   case MVT::i8:  Opc = OpcTable[Idx][0]; break;
   case MVT::i16: Opc = OpcTable[Idx][1]; break;
   case MVT::i32: Opc = OpcTable[Idx][2]; break;
@@ -2827,7 +2835,7 @@ bool AArch64FastISel::selectFPToInt(const Instruction *I, bool Signed) {
     return false;
 
   EVT SrcVT = TLI.getValueType(DL, I->getOperand(0)->getType(), true);
-  if (SrcVT == MVT::f128)
+  if (SrcVT == MVT::f128 || SrcVT == MVT::f16)
     return false;
 
   unsigned Opc;
@@ -2854,6 +2862,10 @@ bool AArch64FastISel::selectIntToFP(const Instruction *I, bool Signed) {
   MVT DestVT;
   if (!isTypeLegal(I->getType(), DestVT) || DestVT.isVector())
     return false;
+  // Let regular ISEL handle FP16
+  if (DestVT == MVT::f16)
+    return false;
+
   assert((DestVT == MVT::f32 || DestVT == MVT::f64) &&
          "Unexpected value type.");
 
@@ -2907,16 +2919,13 @@ bool AArch64FastISel::fastLowerArguments() {
   // Only handle simple cases of up to 8 GPR and FPR each.
   unsigned GPRCnt = 0;
   unsigned FPRCnt = 0;
-  unsigned Idx = 0;
   for (auto const &Arg : F->args()) {
-    // The first argument is at index 1.
-    ++Idx;
-    if (F->getAttributes().hasAttribute(Idx, Attribute::ByVal) ||
-        F->getAttributes().hasAttribute(Idx, Attribute::InReg) ||
-        F->getAttributes().hasAttribute(Idx, Attribute::StructRet) ||
-        F->getAttributes().hasAttribute(Idx, Attribute::SwiftSelf) ||
-        F->getAttributes().hasAttribute(Idx, Attribute::SwiftError) ||
-        F->getAttributes().hasAttribute(Idx, Attribute::Nest))
+    if (Arg.hasAttribute(Attribute::ByVal) ||
+        Arg.hasAttribute(Attribute::InReg) ||
+        Arg.hasAttribute(Attribute::StructRet) ||
+        Arg.hasAttribute(Attribute::SwiftSelf) ||
+        Arg.hasAttribute(Attribute::SwiftError) ||
+        Arg.hasAttribute(Attribute::Nest))
       return false;
 
     Type *ArgTy = Arg.getType();
@@ -3017,7 +3026,7 @@ bool AArch64FastISel::processCallArgs(CallLoweringInfo &CLI,
   // Issue CALLSEQ_START
   unsigned AdjStackDown = TII.getCallFrameSetupOpcode();
   BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(AdjStackDown))
-    .addImm(NumBytes);
+    .addImm(NumBytes).addImm(0);
 
   // Process the args.
   for (CCValAssign &VA : ArgLocs) {
@@ -3147,8 +3156,8 @@ bool AArch64FastISel::fastLowerCall(CallLoweringInfo &CLI) {
     return false;
 
   CodeModel::Model CM = TM.getCodeModel();
-  // Only support the small and large code model.
-  if (CM != CodeModel::Small && CM != CodeModel::Large)
+  // Only support the small-addressing and large code models.
+  if (CM != CodeModel::Large && !Subtarget->useSmallAddressing())
     return false;
 
   // FIXME: Add large code model support for ELF.
@@ -3199,7 +3208,7 @@ bool AArch64FastISel::fastLowerCall(CallLoweringInfo &CLI) {
 
   // Issue the call.
   MachineInstrBuilder MIB;
-  if (CM == CodeModel::Small) {
+  if (Subtarget->useSmallAddressing()) {
     const MCInstrDesc &II = TII.get(Addr.getReg() ? AArch64::BLR : AArch64::BL);
     MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, II);
     if (Symbol)
@@ -3410,8 +3419,7 @@ bool AArch64FastISel::fastLowerIntrinsicCall(const IntrinsicInst *II) {
     MachineFrameInfo &MFI = FuncInfo.MF->getFrameInfo();
     MFI.setFrameAddressIsTaken(true);
 
-    const AArch64RegisterInfo *RegInfo =
-        static_cast<const AArch64RegisterInfo *>(Subtarget->getRegisterInfo());
+    const AArch64RegisterInfo *RegInfo = Subtarget->getRegisterInfo();
     unsigned FramePtr = RegInfo->getFrameRegister(*(FuncInfo.MF));
     unsigned SrcReg = MRI.createVirtualRegister(&AArch64::GPR64RegClass);
     BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
@@ -5130,6 +5138,7 @@ bool AArch64FastISel::fastSelectInstruction(const Instruction *I) {
   return selectOperator(I, I->getOpcode());
   // Silence warnings.
   (void)&CC_AArch64_DarwinPCS_VarArg;
+  (void)&CC_AArch64_Win64_VarArg;
 }
 
 namespace llvm {

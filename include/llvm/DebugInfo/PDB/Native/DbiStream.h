@@ -10,15 +10,16 @@
 #ifndef LLVM_DEBUGINFO_PDB_RAW_PDBDBISTREAM_H
 #define LLVM_DEBUGINFO_PDB_RAW_PDBDBISTREAM_H
 
-#include "llvm/DebugInfo/CodeView/ModuleSubstream.h"
+#include "llvm/DebugInfo/CodeView/DebugSubsection.h"
 #include "llvm/DebugInfo/MSF/MappedBlockStream.h"
-#include "llvm/DebugInfo/MSF/StreamArray.h"
-#include "llvm/DebugInfo/MSF/StreamRef.h"
-#include "llvm/DebugInfo/PDB/Native/ModInfo.h"
+#include "llvm/DebugInfo/PDB/Native/DbiModuleDescriptor.h"
+#include "llvm/DebugInfo/PDB/Native/DbiModuleList.h"
+#include "llvm/DebugInfo/PDB/Native/PDBStringTable.h"
 #include "llvm/DebugInfo/PDB/Native/RawConstants.h"
 #include "llvm/DebugInfo/PDB/Native/RawTypes.h"
-#include "llvm/DebugInfo/PDB/Native/StringTable.h"
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
+#include "llvm/Support/BinaryStreamArray.h"
+#include "llvm/Support/BinaryStreamRef.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 
@@ -62,57 +63,61 @@ public:
 
   PDB_Machine getMachineType() const;
 
+  BinarySubstreamRef getSectionContributionData() const;
+  BinarySubstreamRef getSecMapSubstreamData() const;
+  BinarySubstreamRef getModiSubstreamData() const;
+  BinarySubstreamRef getFileInfoSubstreamData() const;
+  BinarySubstreamRef getTypeServerMapSubstreamData() const;
+  BinarySubstreamRef getECSubstreamData() const;
+
   /// If the given stream type is present, returns its stream index. If it is
   /// not present, returns InvalidStreamIndex.
   uint32_t getDebugStreamIndex(DbgHeaderType Type) const;
 
-  ArrayRef<ModuleInfoEx> modules() const;
+  const DbiModuleList &modules() const;
 
-  Expected<StringRef> getFileNameForIndex(uint32_t Index) const;
+  FixedStreamArray<object::coff_section> getSectionHeaders();
 
-  msf::FixedStreamArray<object::coff_section> getSectionHeaders();
+  FixedStreamArray<object::FpoData> getFpoRecords();
 
-  msf::FixedStreamArray<object::FpoData> getFpoRecords();
-
-  msf::FixedStreamArray<SecMapEntry> getSectionMap() const;
+  FixedStreamArray<SecMapEntry> getSectionMap() const;
   void visitSectionContributions(ISectionContribVisitor &Visitor) const;
 
+  Expected<StringRef> getECName(uint32_t NI) const;
+
 private:
-  Error initializeModInfoArray();
   Error initializeSectionContributionData();
   Error initializeSectionHeadersData();
   Error initializeSectionMapData();
-  Error initializeFileInfo();
   Error initializeFpoRecords();
 
   PDBFile &Pdb;
   std::unique_ptr<msf::MappedBlockStream> Stream;
 
-  std::vector<ModuleInfoEx> ModuleInfos;
-  StringTable ECNames;
+  PDBStringTable ECNames;
 
-  msf::ReadableStreamRef ModInfoSubstream;
-  msf::ReadableStreamRef SecContrSubstream;
-  msf::ReadableStreamRef SecMapSubstream;
-  msf::ReadableStreamRef FileInfoSubstream;
-  msf::ReadableStreamRef TypeServerMapSubstream;
-  msf::ReadableStreamRef ECSubstream;
+  BinarySubstreamRef SecContrSubstream;
+  BinarySubstreamRef SecMapSubstream;
+  BinarySubstreamRef ModiSubstream;
+  BinarySubstreamRef FileInfoSubstream;
+  BinarySubstreamRef TypeServerMapSubstream;
+  BinarySubstreamRef ECSubstream;
 
-  msf::ReadableStreamRef NamesBuffer;
+  DbiModuleList Modules;
 
-  msf::FixedStreamArray<support::ulittle16_t> DbgStreams;
+  FixedStreamArray<support::ulittle16_t> DbgStreams;
 
-  PdbRaw_DbiSecContribVer SectionContribVersion;
-  msf::FixedStreamArray<SectionContrib> SectionContribs;
-  msf::FixedStreamArray<SectionContrib2> SectionContribs2;
-  msf::FixedStreamArray<SecMapEntry> SectionMap;
-  msf::FixedStreamArray<support::little32_t> FileNameOffsets;
+  PdbRaw_DbiSecContribVer SectionContribVersion =
+      PdbRaw_DbiSecContribVer::DbiSecContribVer60;
+  FixedStreamArray<SectionContrib> SectionContribs;
+  FixedStreamArray<SectionContrib2> SectionContribs2;
+  FixedStreamArray<SecMapEntry> SectionMap;
 
   std::unique_ptr<msf::MappedBlockStream> SectionHeaderStream;
-  msf::FixedStreamArray<object::coff_section> SectionHeaders;
+  FixedStreamArray<object::coff_section> SectionHeaders;
 
   std::unique_ptr<msf::MappedBlockStream> FpoStream;
-  msf::FixedStreamArray<object::FpoData> FpoRecords;
+  FixedStreamArray<object::FpoData> FpoRecords;
 
   const DbiStreamHeader *Header;
 };

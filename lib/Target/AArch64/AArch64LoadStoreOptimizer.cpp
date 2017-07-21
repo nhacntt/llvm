@@ -16,10 +16,10 @@
 #include "AArch64Subtarget.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -93,12 +93,18 @@ struct AArch64LoadStoreOpt : public MachineFunctionPass {
     initializeAArch64LoadStoreOptPass(*PassRegistry::getPassRegistry());
   }
 
+  AliasAnalysis *AA;
   const AArch64InstrInfo *TII;
   const TargetRegisterInfo *TRI;
   const AArch64Subtarget *Subtarget;
 
   // Track which registers have been modified and used.
   BitVector ModifiedRegs, UsedRegs;
+
+  virtual void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<AAResultsWrapperPass>();
+    MachineFunctionPass::getAnalysisUsage(AU);
+  }
 
   // Scan the instructions looking for a load/store that can be combined
   // with the current instruction into a load/store pair.
@@ -789,6 +795,7 @@ AArch64LoadStoreOpt::promoteLoadFromStore(MachineBasicBlock::iterator LoadI,
   int LoadSize = getMemScale(*LoadI);
   int StoreSize = getMemScale(*StoreI);
   unsigned LdRt = getLdStRegOp(*LoadI).getReg();
+  const MachineOperand &StMO = getLdStRegOp(*StoreI);
   unsigned StRt = getLdStRegOp(*StoreI).getReg();
   bool IsStoreXReg = TRI->getRegClass(AArch64::GPR64RegClassID)->contains(StRt);
 
@@ -801,7 +808,13 @@ AArch64LoadStoreOpt::promoteLoadFromStore(MachineBasicBlock::iterator LoadI,
     // Remove the load, if the destination register of the loads is the same
     // register for stored value.
     if (StRt == LdRt && LoadSize == 8) {
-      StoreI->clearRegisterKills(StRt, TRI);
+      for (MachineInstr &MI : make_range(StoreI->getIterator(),
+                                         LoadI->getIterator())) {
+        if (MI.killsRegister(StRt, TRI)) {
+          MI.clearRegisterKills(StRt, TRI);
+          break;
+        }
+      }
       DEBUG(dbgs() << "Remove load instruction:\n    ");
       DEBUG(LoadI->print(dbgs()));
       DEBUG(dbgs() << "\n");
@@ -813,7 +826,7 @@ AArch64LoadStoreOpt::promoteLoadFromStore(MachineBasicBlock::iterator LoadI,
         BuildMI(*LoadI->getParent(), LoadI, LoadI->getDebugLoc(),
                 TII->get(IsStoreXReg ? AArch64::ORRXrs : AArch64::ORRWrs), LdRt)
             .addReg(IsStoreXReg ? AArch64::XZR : AArch64::WZR)
-            .addReg(StRt)
+            .add(StMO)
             .addImm(AArch64_AM::getShifterImm(AArch64_AM::LSL, 0));
   } else {
     // FIXME: Currently we disable this transformation in big-endian targets as
@@ -854,14 +867,14 @@ AArch64LoadStoreOpt::promoteLoadFromStore(MachineBasicBlock::iterator LoadI,
           BuildMI(*LoadI->getParent(), LoadI, LoadI->getDebugLoc(),
                   TII->get(IsStoreXReg ? AArch64::ANDXri : AArch64::ANDWri),
                   DestReg)
-              .addReg(StRt)
+              .add(StMO)
               .addImm(AndMaskEncoded);
     } else {
       BitExtMI =
           BuildMI(*LoadI->getParent(), LoadI, LoadI->getDebugLoc(),
                   TII->get(IsStoreXReg ? AArch64::UBFMXri : AArch64::UBFMWri),
                   DestReg)
-              .addReg(StRt)
+              .add(StMO)
               .addImm(Immr)
               .addImm(Imms);
     }
@@ -870,7 +883,10 @@ AArch64LoadStoreOpt::promoteLoadFromStore(MachineBasicBlock::iterator LoadI,
   // Clear kill flags between store and load.
   for (MachineInstr &MI : make_range(StoreI->getIterator(),
                                      BitExtMI->getIterator()))
-    MI.clearRegisterKills(StRt, TRI);
+    if (MI.killsRegister(StRt, TRI)) {
+      MI.clearRegisterKills(StRt, TRI);
+      break;
+    }
 
   DEBUG(dbgs() << "Promoting load by replacing :\n    ");
   DEBUG(StoreI->print(dbgs()));
@@ -936,7 +952,7 @@ static int alignTo(int Num, int PowOf2) {
 }
 
 static bool mayAlias(MachineInstr &MIa, MachineInstr &MIb,
-                     const AArch64InstrInfo *TII) {
+                     AliasAnalysis *AA) {
   // One of the instructions must modify memory.
   if (!MIa.mayStore() && !MIb.mayStore())
     return false;
@@ -945,14 +961,14 @@ static bool mayAlias(MachineInstr &MIa, MachineInstr &MIb,
   if (!MIa.mayLoadOrStore() && !MIb.mayLoadOrStore())
     return false;
 
-  return !TII->areMemAccessesTriviallyDisjoint(MIa, MIb);
+  return MIa.mayAlias(AA, MIb, /*UseTBAA*/false);
 }
 
 static bool mayAlias(MachineInstr &MIa,
                      SmallVectorImpl<MachineInstr *> &MemInsns,
-                     const AArch64InstrInfo *TII) {
+                     AliasAnalysis *AA) {
   for (MachineInstr *MIb : MemInsns)
-    if (mayAlias(MIa, *MIb, TII))
+    if (mayAlias(MIa, *MIb, AA))
       return true;
 
   return false;
@@ -1010,7 +1026,7 @@ bool AArch64LoadStoreOpt::findMatchingStore(
       return false;
 
     // If we encounter a store aliased with the load, return early.
-    if (MI.mayStore() && mayAlias(LoadMI, MI, TII))
+    if (MI.mayStore() && mayAlias(LoadMI, MI, AA))
       return false;
   } while (MBBI != B && Count < Limit);
   return false;
@@ -1180,7 +1196,7 @@ AArch64LoadStoreOpt::findMatchingInsn(MachineBasicBlock::iterator I,
         // first.
         if (!ModifiedRegs[getLdStRegOp(MI).getReg()] &&
             !(MI.mayLoad() && UsedRegs[getLdStRegOp(MI).getReg()]) &&
-            !mayAlias(MI, MemInsns, TII)) {
+            !mayAlias(MI, MemInsns, AA)) {
           Flags.setMergeForward(false);
           return MBBI;
         }
@@ -1191,7 +1207,7 @@ AArch64LoadStoreOpt::findMatchingInsn(MachineBasicBlock::iterator I,
         // into the second.
         if (!ModifiedRegs[getLdStRegOp(FirstMI).getReg()] &&
             !(MayLoad && UsedRegs[getLdStRegOp(FirstMI).getReg()]) &&
-            !mayAlias(FirstMI, MemInsns, TII)) {
+            !mayAlias(FirstMI, MemInsns, AA)) {
           Flags.setMergeForward(true);
           return MBBI;
         }
@@ -1734,6 +1750,7 @@ bool AArch64LoadStoreOpt::runOnMachineFunction(MachineFunction &Fn) {
   Subtarget = &static_cast<const AArch64Subtarget &>(Fn.getSubtarget());
   TII = static_cast<const AArch64InstrInfo *>(Subtarget->getInstrInfo());
   TRI = Subtarget->getRegisterInfo();
+  AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
 
   // Resize the modified and used register bitfield trackers.  We do this once
   // per function and then clear the bitfield each time we optimize a load or

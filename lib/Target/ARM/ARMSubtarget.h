@@ -64,6 +64,7 @@ protected:
     CortexR7,
     ExynosM1,
     Krait,
+    Kryo,
     Swift
   };
   enum ARMProcClassEnum {
@@ -207,8 +208,8 @@ protected:
   /// FP registers for VFPv3.
   bool HasD16 = false;
 
-  /// HasHardwareDivide - True if subtarget supports [su]div
-  bool HasHardwareDivide = false;
+  /// HasHardwareDivide - True if subtarget supports [su]div in Thumb mode
+  bool HasHardwareDivideInThumb = false;
 
   /// HasHardwareDivideInARM - True if subtarget supports [su]div in ARM mode
   bool HasHardwareDivideInARM = false;
@@ -233,6 +234,10 @@ protected:
   /// CPSR setting instruction.
   bool AvoidCPSRPartialUpdate = false;
 
+  /// CheapPredicableCPSRDef - If true, disable +1 predication cost
+  /// for instructions updating CPSR. Enabled for Cortex-A57.
+  bool CheapPredicableCPSRDef = false;
+
   /// AvoidMOVsShifterOperand - If true, codegen should avoid using flag setting
   /// movs with shifter operand (i.e. asr, lsl, lsr).
   bool AvoidMOVsShifterOperand = false;
@@ -240,6 +245,11 @@ protected:
   /// HasRetAddrStack - Some processors perform return stack prediction. CodeGen should
   /// avoid issue "normal" call instructions to callees which do not return.
   bool HasRetAddrStack = false;
+
+  /// HasBranchPredictor - True if the subtarget has a branch predictor. Having
+  /// a branch predictor or not changes the expected cost of taking a branch
+  /// which affects the choice of whether to use predicated instructions.
+  bool HasBranchPredictor = true;
 
   /// HasMPExtension - True if the subtarget supports Multiprocessing
   /// extension (ARMv7 only).
@@ -279,6 +289,10 @@ protected:
 
   /// HasFPAO - if true, processor  does positive address offset computation faster
   bool HasFPAO = false;
+
+  /// HasFuseAES - if true, processor executes back to back AES instruction
+  /// pairs faster.
+  bool HasFuseAES = false;
 
   /// If true, if conversion may decide to leave some instructions unpredicated.
   bool IsProfitableToUnpredicate = false;
@@ -350,6 +364,10 @@ protected:
 
   /// UseSjLjEH - If true, the target uses SjLj exception handling (e.g. iOS).
   bool UseSjLjEH = false;
+
+  /// Implicitly convert an instruction to a different one if its immediates
+  /// cannot be encoded. For example, ADD r0, r1, #FFFFFFFF -> SUB r0, r1, #1.
+  bool NegativeImmediates = true;
 
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
@@ -502,7 +520,7 @@ public:
     return hasNEON() && UseNEONForSinglePrecisionFP;
   }
 
-  bool hasDivide() const { return HasHardwareDivide; }
+  bool hasDivideInThumbMode() const { return HasHardwareDivideInThumb; }
   bool hasDivideInARMMode() const { return HasHardwareDivideInARM; }
   bool hasDataBarrier() const { return HasDataBarrier; }
   bool hasV7Clrex() const { return HasV7Clrex; }
@@ -538,8 +556,10 @@ public:
   bool nonpipelinedVFP() const { return NonpipelinedVFP; }
   bool prefers32BitThumb() const { return Pref32BitThumb; }
   bool avoidCPSRPartialUpdate() const { return AvoidCPSRPartialUpdate; }
+  bool cheapPredicableCPSRDef() const { return CheapPredicableCPSRDef; }
   bool avoidMOVsShifterOperand() const { return AvoidMOVsShifterOperand; }
   bool hasRetAddrStack() const { return HasRetAddrStack; }
+  bool hasBranchPredictor() const { return HasBranchPredictor; }
   bool hasMPExtension() const { return HasMPExtension; }
   bool hasDSP() const { return HasDSP; }
   bool useNaClTrap() const { return UseNaClTrap; }
@@ -550,6 +570,10 @@ public:
   bool hasFP16() const { return HasFP16; }
   bool hasD16() const { return HasD16; }
   bool hasFullFP16() const { return HasFullFP16; }
+
+  bool hasFuseAES() const { return HasFuseAES; }
+  /// \brief Return true if the CPU supports any kind of instruction fusion.
+  bool hasFusion() const { return hasFuseAES(); }
 
   const Triple &getTargetTriple() const { return TargetTriple; }
 

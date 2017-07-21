@@ -15,11 +15,21 @@
 
 #include "llvm/CodeGen/MachineOptimizationRemarkEmitter.h"
 #include "llvm/CodeGen/LazyMachineBlockFrequencyInfo.h"
+#include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/LLVMContext.h"
 
 using namespace llvm;
+
+DiagnosticInfoMIROptimization::MachineArgument::MachineArgument(
+    StringRef MKey, const MachineInstr &MI)
+    : Argument() {
+  Key = MKey;
+
+  raw_string_ostream OS(Val);
+  MI.print(OS, /*SkipOpers=*/false, /*SkipDebugLoc=*/true);
+}
 
 Optional<uint64_t>
 MachineOptimizationRemarkEmitter::computeHotness(const MachineBasicBlock &MBB) {
@@ -42,6 +52,14 @@ void MachineOptimizationRemarkEmitter::emit(
   computeHotness(OptDiag);
 
   LLVMContext &Ctx = MF.getFunction()->getContext();
+
+  // If a diagnostic has a hotness value, then only emit it if its hotness
+  // meets the threshold.
+  if (OptDiag.getHotness() &&
+      *OptDiag.getHotness() < Ctx.getDiagnosticsHotnessThreshold()) {
+    return;
+  }
+
   yaml::Output *Out = Ctx.getDiagnosticsOutputFile();
   if (Out) {
     auto *P = &const_cast<DiagnosticInfoOptimizationBase &>(OptDiagCommon);
@@ -63,7 +81,7 @@ bool MachineOptimizationRemarkEmitterPass::runOnMachineFunction(
     MachineFunction &MF) {
   MachineBlockFrequencyInfo *MBFI;
 
-  if (MF.getFunction()->getContext().getDiagnosticHotnessRequested())
+  if (MF.getFunction()->getContext().getDiagnosticsHotnessRequested())
     MBFI = &getAnalysis<LazyMachineBlockFrequencyInfoPass>().getBFI();
   else
     MBFI = nullptr;
@@ -74,7 +92,7 @@ bool MachineOptimizationRemarkEmitterPass::runOnMachineFunction(
 
 void MachineOptimizationRemarkEmitterPass::getAnalysisUsage(
     AnalysisUsage &AU) const {
-  LazyMachineBlockFrequencyInfoPass::getLazyMachineBFIAnalysisUsage(AU);
+  AU.addRequired<LazyMachineBlockFrequencyInfoPass>();
   AU.setPreservesAll();
   MachineFunctionPass::getAnalysisUsage(AU);
 }
@@ -85,6 +103,6 @@ static const char ore_name[] = "Machine Optimization Remark Emitter";
 
 INITIALIZE_PASS_BEGIN(MachineOptimizationRemarkEmitterPass, ORE_NAME, ore_name,
                       false, true)
-INITIALIZE_PASS_DEPENDENCY(LazyMachineBFIPass)
+INITIALIZE_PASS_DEPENDENCY(LazyMachineBlockFrequencyInfoPass)
 INITIALIZE_PASS_END(MachineOptimizationRemarkEmitterPass, ORE_NAME, ore_name,
                     false, true)

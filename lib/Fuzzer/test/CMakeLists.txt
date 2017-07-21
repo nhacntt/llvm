@@ -76,10 +76,13 @@ set(Tests
   AbsNegAndConstantTest
   AbsNegAndConstant64Test
   AccumulateAllocationsTest
+  BadStrcmpTest
   BogusInitializeTest
   BufferOverflowOnInput
   CallerCalleeTest
+  CleanseTest
   CounterTest
+  CustomCrossOverAndMutateTest
   CustomCrossOverTest
   CustomMutatorTest
   CxxStringEqTest
@@ -87,6 +90,7 @@ set(Tests
   EmptyTest
   EquivalenceATest
   EquivalenceBTest
+  FlagsTest
   FourIndependentBranchesTest
   FullCoverageSetTest
   InitializeTest
@@ -101,6 +105,7 @@ set(Tests
   OneHugeAllocTest
   OutOfMemoryTest
   OutOfMemorySingleLargeMallocTest
+  OverwriteInputTest
   RepeatedMemcmp
   RepeatedBytesTest
   SimpleCmpTest
@@ -114,6 +119,7 @@ set(Tests
   SingleStrncmpTest
   SpamyTest
   ShrinkControlFlowTest
+  ShrinkControlFlowSimpleTest
   ShrinkValueProfileTest
   StrcmpTest
   StrncmpOOBTest
@@ -122,11 +128,13 @@ set(Tests
   SwapCmpTest
   SwitchTest
   Switch2Test
+  TableLookupTest
   ThreadedLeakTest
   ThreadedTest
   TimeoutTest
   TimeoutEmptyTest
   TraceMallocTest
+  TwoDifferentBugsTest
   )
 
 if(APPLE OR MSVC)
@@ -198,7 +206,11 @@ include_directories(..)
 
 # add_subdirectory(uninstrumented)
 add_subdirectory(no-coverage)
+add_subdirectory(trace-pc)
 add_subdirectory(ubsan)
+if (NOT MSVC)
+  add_subdirectory(inline-8bit-counters)
+endif()
 
 add_library(LLVMFuzzer-DSO1 SHARED DSO1.cpp)
 add_library(LLVMFuzzer-DSO2 SHARED DSO2.cpp)

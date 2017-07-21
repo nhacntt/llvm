@@ -19,9 +19,10 @@
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
 
 namespace llvm {
+class WritableBinaryStreamRef;
+
 namespace msf {
 class MSFBuilder;
-class StreamWriter;
 }
 namespace pdb {
 class PDBFile;
@@ -36,22 +37,24 @@ public:
   void setVersion(PdbRaw_ImplVer V);
   void setSignature(uint32_t S);
   void setAge(uint32_t A);
-  void setGuid(PDB_UniqueId G);
+  void setGuid(codeview::GUID G);
+  void addFeature(PdbRaw_FeatureSig Sig);
 
   uint32_t finalize();
 
   Error finalizeMsfLayout();
 
   Error commit(const msf::MSFLayout &Layout,
-               const msf::WritableStream &Buffer) const;
+               WritableBinaryStreamRef Buffer) const;
 
 private:
   msf::MSFBuilder &Msf;
 
+  std::vector<PdbRaw_FeatureSig> Features;
   PdbRaw_ImplVer Ver;
   uint32_t Sig;
   uint32_t Age;
-  PDB_UniqueId Guid;
+  codeview::GUID Guid;
 
   NamedStreamMap &NamedStreams;
 };

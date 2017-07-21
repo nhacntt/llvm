@@ -25,7 +25,7 @@ using namespace llvm;
 
 OptimizationRemarkEmitter::OptimizationRemarkEmitter(const Function *F)
     : F(F), BFI(nullptr) {
-  if (!F->getContext().getDiagnosticHotnessRequested())
+  if (!F->getContext().getDiagnosticsHotnessRequested())
     return;
 
   // First create a dominator tree.
@@ -101,7 +101,7 @@ void MappingTraits<DiagnosticInfoOptimizationBase *>::mapping(
   // These are read-only for now.
   DiagnosticLocation DL = OptDiag->getLocation();
   StringRef FN =
-      GlobalValue::getRealLinkageName(OptDiag->getFunction().getName());
+      GlobalValue::dropLLVMManglingEscape(OptDiag->getFunction().getName());
 
   StringRef PassName(OptDiag->PassName);
   io.mapRequired("Pass", PassName);
@@ -155,6 +155,13 @@ void OptimizationRemarkEmitter::emit(
     DiagnosticInfoOptimizationBase &OptDiagBase) {
   auto &OptDiag = cast<DiagnosticInfoIROptimization>(OptDiagBase);
   computeHotness(OptDiag);
+  // If a diagnostic has a hotness value, then only emit it if its hotness
+  // meets the threshold.
+  if (OptDiag.getHotness() &&
+      *OptDiag.getHotness() <
+          F->getContext().getDiagnosticsHotnessThreshold()) {
+    return;
+  }
 
   yaml::Output *Out = F->getContext().getDiagnosticsOutputFile();
   if (Out) {
@@ -167,72 +174,6 @@ void OptimizationRemarkEmitter::emit(
     F->getContext().diagnose(OptDiag);
 }
 
-void OptimizationRemarkEmitter::emitOptimizationRemark(const char *PassName,
-                                                       const DebugLoc &DLoc,
-                                                       const Value *V,
-                                                       const Twine &Msg) {
-  LLVMContext &Ctx = F->getContext();
-  Ctx.diagnose(OptimizationRemark(PassName, *F, DLoc, Msg, computeHotness(V)));
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemark(const char *PassName,
-                                                       Loop *L,
-                                                       const Twine &Msg) {
-  emitOptimizationRemark(PassName, L->getStartLoc(), L->getHeader(), Msg);
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkMissed(
-    const char *PassName, const DebugLoc &DLoc, const Value *V,
-    const Twine &Msg, bool IsVerbose) {
-  LLVMContext &Ctx = F->getContext();
-  if (!IsVerbose || shouldEmitVerbose())
-    Ctx.diagnose(
-        OptimizationRemarkMissed(PassName, *F, DLoc, Msg, computeHotness(V)));
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkMissed(
-    const char *PassName, Loop *L, const Twine &Msg, bool IsVerbose) {
-  emitOptimizationRemarkMissed(PassName, L->getStartLoc(), L->getHeader(), Msg,
-                               IsVerbose);
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysis(
-    const char *PassName, const DebugLoc &DLoc, const Value *V,
-    const Twine &Msg, bool IsVerbose) {
-  LLVMContext &Ctx = F->getContext();
-  if (!IsVerbose || shouldEmitVerbose())
-    Ctx.diagnose(
-        OptimizationRemarkAnalysis(PassName, *F, DLoc, Msg, computeHotness(V)));
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysis(
-    const char *PassName, Loop *L, const Twine &Msg, bool IsVerbose) {
-  emitOptimizationRemarkAnalysis(PassName, L->getStartLoc(), L->getHeader(),
-                                 Msg, IsVerbose);
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysisFPCommute(
-    const char *PassName, const DebugLoc &DLoc, const Value *V,
-    const Twine &Msg) {
-  LLVMContext &Ctx = F->getContext();
-  Ctx.diagnose(OptimizationRemarkAnalysisFPCommute(PassName, *F, DLoc, Msg,
-                                                   computeHotness(V)));
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysisAliasing(
-    const char *PassName, const DebugLoc &DLoc, const Value *V,
-    const Twine &Msg) {
-  LLVMContext &Ctx = F->getContext();
-  Ctx.diagnose(OptimizationRemarkAnalysisAliasing(PassName, *F, DLoc, Msg,
-                                                  computeHotness(V)));
-}
-
-void OptimizationRemarkEmitter::emitOptimizationRemarkAnalysisAliasing(
-    const char *PassName, Loop *L, const Twine &Msg) {
-  emitOptimizationRemarkAnalysisAliasing(PassName, L->getStartLoc(),
-                                         L->getHeader(), Msg);
-}
-
 OptimizationRemarkEmitterWrapperPass::OptimizationRemarkEmitterWrapperPass()
     : FunctionPass(ID) {
   initializeOptimizationRemarkEmitterWrapperPassPass(
@@ -242,7 +183,7 @@ OptimizationRemarkEmitterWrapperPass::OptimizationRemarkEmitterWrapperPass()
 bool OptimizationRemarkEmitterWrapperPass::runOnFunction(Function &Fn) {
   BlockFrequencyInfo *BFI;
 
-  if (Fn.getContext().getDiagnosticHotnessRequested())
+  if (Fn.getContext().getDiagnosticsHotnessRequested())
     BFI = &getAnalysis<LazyBlockFrequencyInfoPass>().getBFI();
   else
     BFI = nullptr;
@@ -264,7 +205,7 @@ OptimizationRemarkEmitterAnalysis::run(Function &F,
                                        FunctionAnalysisManager &AM) {
   BlockFrequencyInfo *BFI;
 
-  if (F.getContext().getDiagnosticHotnessRequested())
+  if (F.getContext().getDiagnosticsHotnessRequested())
     BFI = &AM.getResult<BlockFrequencyAnalysis>(F);
   else
     BFI = nullptr;

@@ -49,6 +49,12 @@ def G_TRUNC : Instruction {
   let hasSideEffects = 0;
 }
 
+def G_IMPLICIT_DEF : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins);
+  let hasSideEffects = 0;
+}
+
 def G_FRAME_INDEX : Instruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins unknown:$src2);
@@ -316,6 +322,12 @@ def G_SMULH : Instruction {
 // Floating Point Unary Ops.
 //------------------------------------------------------------------------------
 
+def G_FNEG : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src);
+  let hasSideEffects = 0;
+}
+
 def G_FPEXT : Instruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins type1:$src);
@@ -380,6 +392,15 @@ def G_FMUL : Instruction {
   let isCommutable = 1;
 }
 
+// Generic fused multiply-add instruction.
+// Behaves like llvm fma intrinsic ie src1 * src2 + src3
+def G_FMA : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1, type0:$src2, type0:$src3);
+  let hasSideEffects = 0;
+  let isCommutable = 0;
+}
+
 // Generic FP division.
 def G_FDIV : Instruction {
   let OutOperandList = (outs type0:$dst);
@@ -398,6 +419,34 @@ def G_FREM : Instruction {
 def G_FPOW : Instruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins type0:$src1, type0:$src2);
+  let hasSideEffects = 0;
+}
+
+// Floating point base-e exponential of a value.
+def G_FEXP : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1);
+  let hasSideEffects = 0;
+}
+
+// Floating point base-2 exponential of a value.
+def G_FEXP2 : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1);
+  let hasSideEffects = 0;
+}
+
+// Floating point base-2 logarithm of a value.
+def G_FLOG : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1);
+  let hasSideEffects = 0;
+}
+
+// Floating point base-2 logarithm of a value.
+def G_FLOG2 : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1);
   let hasSideEffects = 0;
 }
 
@@ -429,24 +478,28 @@ def G_STORE : Instruction {
 // indexes. This will almost certainly be mapped to sub-register COPYs after
 // register banks have been selected.
 def G_EXTRACT : Instruction {
+  let OutOperandList = (outs type0:$res);
+  let InOperandList = (ins type1:$src, unknown:$offset);
+  let hasSideEffects = 0;
+}
+
+// Extract multiple registers specified size, starting from blocks given by
+// indexes. This will almost certainly be mapped to sub-register COPYs after
+// register banks have been selected.
+def G_UNMERGE_VALUES : Instruction {
   let OutOperandList = (outs);
   let InOperandList = (ins variable_ops);
   let hasSideEffects = 0;
 }
 
-// Insert a sequence of smaller registers into a larger one at the specified
-// indices (interleaved with the values in the operand list "op0, bit0, op1,
-// bit1, ...")).
+// Insert a smaller register into a larger one at the specified bit-index.
 def G_INSERT : Instruction {
   let OutOperandList = (outs type0:$dst);
-  let InOperandList = (ins type0:$src, variable_ops);
+  let InOperandList = (ins type0:$src, type1:$op, unknown:$offset);
   let hasSideEffects = 0;
 }
 
-// Combine a sequence of generic vregs into a single larger value (starting at
-// bit 0). Essentially a G_INSERT where $src is an IMPLICIT_DEF, but it's so
-// important to legalization it probably deserves its own instruction.
-def G_SEQUENCE : Instruction {
+def G_MERGE_VALUES : Instruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins variable_ops);
   let hasSideEffects = 0;
@@ -498,6 +551,31 @@ def G_BRINDIRECT : Instruction {
   let hasSideEffects = 0;
   let isBranch = 1;
   let isTerminator = 1;
+}
+
+//------------------------------------------------------------------------------
+// Vector ops
+//------------------------------------------------------------------------------
+
+// Generic insertelement.
+def G_INSERT_VECTOR_ELT : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src, type1:$elt, type2:$idx);
+  let hasSideEffects = 0;
+}
+
+// Generic extractelement.
+def G_EXTRACT_VECTOR_ELT : Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type1:$src, type2:$idx);
+  let hasSideEffects = 0;
+}
+
+// Generic shufflevector.
+def G_SHUFFLE_VECTOR: Instruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type1:$v1, type1:$v2, type2:$mask);
+  let hasSideEffects = 0;
 }
 
 // TODO: Add the other generic opcodes.

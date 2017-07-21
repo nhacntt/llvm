@@ -27,10 +27,10 @@
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
 #include "llvm/DebugInfo/MSF/MappedBlockStream.h"
-#include "llvm/DebugInfo/MSF/StreamReader.h"
 #include "llvm/DebugInfo/PDB/Native/PDBFile.h"
 #include "llvm/DebugInfo/PDB/Native/RawError.h"
 #include "llvm/DebugInfo/PDB/Native/SymbolStream.h"
+#include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include <algorithm>
@@ -40,19 +40,6 @@ using namespace llvm;
 using namespace llvm::msf;
 using namespace llvm::support;
 using namespace llvm::pdb;
-
-// This is PSGSIHDR struct defined in
-// https://github.com/Microsoft/microsoft-pdb/blob/master/PDB/dbi/gsi.h
-struct PublicsStream::HeaderInfo {
-  ulittle32_t SymHash;
-  ulittle32_t AddrMap;
-  ulittle32_t NumThunks;
-  ulittle32_t SizeOfThunk;
-  ulittle16_t ISectThunkTable;
-  char Padding[2];
-  ulittle32_t OffThunkTable;
-  ulittle32_t NumSections;
-};
 
 PublicsStream::PublicsStream(PDBFile &File,
                              std::unique_ptr<MappedBlockStream> Stream)
@@ -69,10 +56,11 @@ uint32_t PublicsStream::getAddrMap() const { return Header->AddrMap; }
 // we skip over the hash table which we believe contains information about
 // public symbols.
 Error PublicsStream::reload() {
-  StreamReader Reader(*Stream);
+  BinaryStreamReader Reader(*Stream);
 
   // Check stream size.
-  if (Reader.bytesRemaining() < sizeof(HeaderInfo) + sizeof(GSIHashHeader))
+  if (Reader.bytesRemaining() <
+      sizeof(PublicsStreamHeader) + sizeof(GSIHashHeader))
     return make_error<RawError>(raw_error_code::corrupt_file,
                                 "Publics Stream does not contain a header.");
 
@@ -105,10 +93,12 @@ Error PublicsStream::reload() {
                                            "Could not read a thunk map."));
 
   // Something called "section map" follows.
-  if (auto EC = Reader.readArray(SectionOffsets, Header->NumSections))
-    return joinErrors(std::move(EC),
-                      make_error<RawError>(raw_error_code::corrupt_file,
-                                           "Could not read a section map."));
+  if (Reader.bytesRemaining() > 0) {
+    if (auto EC = Reader.readArray(SectionOffsets, Header->NumSections))
+      return joinErrors(std::move(EC),
+                        make_error<RawError>(raw_error_code::corrupt_file,
+                                             "Could not read a section map."));
+  }
 
   if (Reader.bytesRemaining() > 0)
     return make_error<RawError>(raw_error_code::corrupt_file,
@@ -126,6 +116,15 @@ PublicsStream::getSymbols(bool *HadError) const {
   SymbolStream &SS = SymbolS.get();
 
   return SS.getSymbols(HadError);
+}
+
+Expected<const codeview::CVSymbolArray &>
+PublicsStream::getSymbolArray() const {
+  auto SymbolS = Pdb.getPDBSymbolStream();
+  if (!SymbolS)
+    return SymbolS.takeError();
+
+  return SymbolS->getSymbolArray();
 }
 
 Error PublicsStream::commit() { return Error::success(); }

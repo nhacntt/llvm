@@ -10,6 +10,7 @@ tablegen(LLVM X86GenDAGISel.inc -gen-dag-isel)
 tablegen(LLVM X86GenFastISel.inc -gen-fast-isel)
 tablegen(LLVM X86GenCallingConv.inc -gen-callingconv)
 tablegen(LLVM X86GenSubtargetInfo.inc -gen-subtarget)
+tablegen(LLVM X86GenEVEX2VEXTables.inc -gen-x86-EVEX2VEX-tables)
 if(LLVM_BUILD_GLOBAL_ISEL)
   tablegen(LLVM X86GenRegisterBank.inc -gen-register-bank)
   tablegen(LLVM X86GenGlobalISel.inc -gen-global-isel)
@@ -36,6 +37,7 @@ endif()
 set(sources
   X86AsmPrinter.cpp
   X86CallFrameOptimization.cpp
+  X86CmovConversion.cpp
   X86ExpandPseudo.cpp
   X86FastISel.cpp
   X86FixupBWInsts.cpp

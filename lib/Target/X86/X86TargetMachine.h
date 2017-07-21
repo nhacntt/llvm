@@ -25,6 +25,8 @@
 namespace llvm {
 
 class StringRef;
+class X86Subtarget;
+class X86RegisterBankInfo;
 
 class X86TargetMachine final : public LLVMTargetMachine {
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
@@ -38,6 +40,9 @@ public:
   ~X86TargetMachine() override;
 
   const X86Subtarget *getSubtargetImpl(const Function &F) const override;
+  // The no argument getSubtargetImpl, while it exists on some targets, is
+  // deprecated and should not be used.
+  const X86Subtarget *getSubtargetImpl() const = delete;
 
   TargetIRAnalysis getTargetIRAnalysis() override;
 
@@ -46,6 +51,10 @@ public:
 
   TargetLoweringObjectFile *getObjFileLowering() const override {
     return TLOF.get();
+  }
+
+  bool isMachineVerifierClean() const override {
+    return false;
   }
 };
 

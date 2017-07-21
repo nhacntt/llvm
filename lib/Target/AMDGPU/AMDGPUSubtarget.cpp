@@ -13,9 +13,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPUSubtarget.h"
+#include "AMDGPU.h"
+#include "AMDGPUTargetMachine.h"
+#ifdef LLVM_BUILD_GLOBAL_ISEL
+#include "AMDGPUCallLowering.h"
+#include "AMDGPUInstructionSelector.h"
+#include "AMDGPULegalizerInfo.h"
+#include "AMDGPURegisterBankInfo.h"
+#endif
 #include "SIMachineFunctionInfo.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/CodeGen/MachineScheduler.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include <algorithm>
 
@@ -23,7 +32,6 @@ using namespace llvm;
 
 #define DEBUG_TYPE "amdgpu-subtarget"
 
-#define GET_SUBTARGETINFO_ENUM
 #define GET_SUBTARGETINFO_TARGET_DESC
 #define GET_SUBTARGETINFO_CTOR
 #include "AMDGPUGenSubtargetInfo.inc"
@@ -72,6 +80,31 @@ AMDGPUSubtarget::initializeSubtargetDependencies(const Triple &TT,
   return *this;
 }
 
+#ifdef LLVM_BUILD_GLOBAL_ISEL
+namespace {
+
+struct SIGISelActualAccessor : public GISelAccessor {
+  std::unique_ptr<AMDGPUCallLowering> CallLoweringInfo;
+  std::unique_ptr<InstructionSelector> InstSelector;
+  std::unique_ptr<LegalizerInfo> Legalizer;
+  std::unique_ptr<RegisterBankInfo> RegBankInfo;
+  const AMDGPUCallLowering *getCallLowering() const override {
+    return CallLoweringInfo.get();
+  }
+  const InstructionSelector *getInstructionSelector() const override {
+    return InstSelector.get();
+  }
+  const LegalizerInfo *getLegalizerInfo() const override {
+    return Legalizer.get();
+  }
+  const RegisterBankInfo *getRegBankInfo() const override {
+    return RegBankInfo.get();
+  }
+};
+
+} // end anonymous namespace
+#endif
+
 AMDGPUSubtarget::AMDGPUSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
                                  const TargetMachine &TM)
   : AMDGPUGenSubtargetInfo(TT, GPU, FS),
@@ -91,6 +124,7 @@ AMDGPUSubtarget::AMDGPUSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
     FPExceptions(false),
     DX10Clamp(false),
     FlatForGlobal(false),
+    AutoWaitcntBeforeBarrier(false),
     UnalignedScratchAccess(false),
     UnalignedBufferAccess(false),
 
@@ -117,13 +151,22 @@ AMDGPUSubtarget::AMDGPUSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
     SGPRInitBug(false),
     HasSMemRealTime(false),
     Has16BitInsts(false),
+    HasVOP3PInsts(false),
     HasMovrel(false),
     HasVGPRIndexMode(false),
     HasScalarStores(false),
     HasInv2PiInlineImm(false),
     HasSDWA(false),
+    HasSDWAOmod(false),
+    HasSDWAScalar(false),
+    HasSDWASdst(false),
+    HasSDWAMac(false),
+    HasSDWAOutModsVOPC(false),
     HasDPP(false),
     FlatAddressSpace(false),
+    FlatInstOffsets(false),
+    FlatGlobalInsts(false),
+    FlatScratchInsts(false),
 
     R600ALUInst(false),
     CaymanISA(false),
@@ -134,6 +177,7 @@ AMDGPUSubtarget::AMDGPUSubtarget(const Triple &TT, StringRef GPU, StringRef FS,
 
     FeatureDisable(false),
     InstrItins(getInstrItineraryForCPU(GPU)) {
+  AS = AMDGPU::getAMDGPUAS(TT);
   initializeSubtargetDependencies(TT, GPU, FS);
 }
 
@@ -233,10 +277,72 @@ std::pair<unsigned, unsigned> AMDGPUSubtarget::getWavesPerEU(
   // Make sure requested values are compatible with values implied by requested
   // minimum/maximum flat work group sizes.
   if (RequestedFlatWorkGroupSize &&
-      Requested.first > MinImpliedByFlatWorkGroupSize)
+      Requested.first < MinImpliedByFlatWorkGroupSize)
     return Default;
 
   return Requested;
+}
+
+bool AMDGPUSubtarget::makeLIDRangeMetadata(Instruction *I) const {
+  Function *Kernel = I->getParent()->getParent();
+  unsigned MinSize = 0;
+  unsigned MaxSize = getFlatWorkGroupSizes(*Kernel).second;
+  bool IdQuery = false;
+
+  // If reqd_work_group_size is present it narrows value down.
+  if (auto *CI = dyn_cast<CallInst>(I)) {
+    const Function *F = CI->getCalledFunction();
+    if (F) {
+      unsigned Dim = UINT_MAX;
+      switch (F->getIntrinsicID()) {
+      case Intrinsic::amdgcn_workitem_id_x:
+      case Intrinsic::r600_read_tidig_x:
+        IdQuery = true;
+        LLVM_FALLTHROUGH;
+      case Intrinsic::r600_read_local_size_x:
+        Dim = 0;
+        break;
+      case Intrinsic::amdgcn_workitem_id_y:
+      case Intrinsic::r600_read_tidig_y:
+        IdQuery = true;
+        LLVM_FALLTHROUGH;
+      case Intrinsic::r600_read_local_size_y:
+        Dim = 1;
+        break;
+      case Intrinsic::amdgcn_workitem_id_z:
+      case Intrinsic::r600_read_tidig_z:
+        IdQuery = true;
+        LLVM_FALLTHROUGH;
+      case Intrinsic::r600_read_local_size_z:
+        Dim = 2;
+        break;
+      default:
+        break;
+      }
+      if (Dim <= 3) {
+        if (auto Node = Kernel->getMetadata("reqd_work_group_size"))
+          if (Node->getNumOperands() == 3)
+            MinSize = MaxSize = mdconst::extract<ConstantInt>(
+                                  Node->getOperand(Dim))->getZExtValue();
+      }
+    }
+  }
+
+  if (!MaxSize)
+    return false;
+
+  // Range metadata is [Lo, Hi). For ID query we need to pass max size
+  // as Hi. For size query we need to pass Hi + 1.
+  if (IdQuery)
+    MinSize = 0;
+  else
+    ++MaxSize;
+
+  MDBuilder MDB(I->getContext());
+  MDNode *MaxWorkGroupSizeRange = MDB.createRange(APInt(32, MinSize),
+                                                  APInt(32, MaxSize));
+  I->setMetadata(LLVMContext::MD_range, MaxWorkGroupSizeRange);
+  return true;
 }
 
 R600Subtarget::R600Subtarget(const Triple &TT, StringRef GPU, StringRef FS,
@@ -247,11 +353,23 @@ R600Subtarget::R600Subtarget(const Triple &TT, StringRef GPU, StringRef FS,
   TLInfo(TM, *this) {}
 
 SISubtarget::SISubtarget(const Triple &TT, StringRef GPU, StringRef FS,
-                         const TargetMachine &TM) :
-  AMDGPUSubtarget(TT, GPU, FS, TM),
-  InstrInfo(*this),
-  FrameLowering(TargetFrameLowering::StackGrowsUp, getStackAlignment(), 0),
-  TLInfo(TM, *this) {}
+                         const TargetMachine &TM)
+    : AMDGPUSubtarget(TT, GPU, FS, TM), InstrInfo(*this),
+      FrameLowering(TargetFrameLowering::StackGrowsUp, getStackAlignment(), 0),
+      TLInfo(TM, *this) {
+#ifndef LLVM_BUILD_GLOBAL_ISEL
+  GISelAccessor *GISel = new GISelAccessor();
+#else
+  SIGISelActualAccessor *GISel = new SIGISelActualAccessor();
+  GISel->CallLoweringInfo.reset(new AMDGPUCallLowering(*getTargetLowering()));
+  GISel->Legalizer.reset(new AMDGPULegalizerInfo());
+
+  GISel->RegBankInfo.reset(new AMDGPURegisterBankInfo(*getRegisterInfo()));
+  GISel->InstSelector.reset(new AMDGPUInstructionSelector(
+      *this, *static_cast<AMDGPURegisterBankInfo *>(GISel->RegBankInfo.get())));
+#endif
+  setGISelAccessor(*GISel);
+}
 
 void SISubtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,
                                       unsigned NumRegionInstrs) const {

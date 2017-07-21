@@ -21,7 +21,7 @@ def SDT_MipsCMov         : SDTypeProfile<1, 4, [SDTCisSameAs<0, 1>,
                                                 SDTCisSameAs<1, 2>,
                                                 SDTCisSameAs<3, 4>,
                                                 SDTCisInt<4>]>;
-def SDT_MipsCallSeqStart : SDCallSeqStart<[SDTCisVT<0, i32>]>;
+def SDT_MipsCallSeqStart : SDCallSeqStart<[SDTCisVT<0, i32>, SDTCisVT<1, i32>]>;
 def SDT_MipsCallSeqEnd   : SDCallSeqEnd<[SDTCisVT<0, i32>, SDTCisVT<1, i32>]>;
 def SDT_MFLOHI : SDTypeProfile<1, 1, [SDTCisInt<0>, SDTCisVT<1, untyped>]>;
 def SDT_MTLOHI : SDTypeProfile<1, 2, [SDTCisVT<0, untyped>,
@@ -138,6 +138,7 @@ def MipsSync : SDNode<"MipsISD::Sync", SDT_Sync, [SDNPHasChain,SDNPSideEffect]>;
 
 def MipsExt :  SDNode<"MipsISD::Ext", SDT_Ext>;
 def MipsIns :  SDNode<"MipsISD::Ins", SDT_Ins>;
+def MipsCIns : SDNode<"MipsISD::CIns", SDT_Ext>;
 
 def MipsLWL : SDNode<"MipsISD::LWL", SDTMipsLoadLR,
                      [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
@@ -237,7 +238,10 @@ def HasEVA       :    Predicate<"Subtarget->hasEVA()">,
                       AssemblerPredicate<"FeatureEVA,FeatureMips32r2">;
 def HasMSA : Predicate<"Subtarget->hasMSA()">,
              AssemblerPredicate<"FeatureMSA">;
-
+def HasMadd4 : Predicate<"!Subtarget->disableMadd4()">,
+               AssemblerPredicate<"!FeatureMadd4">;
+def HasMT  : Predicate<"Subtarget->hasMT()">,
+             AssemblerPredicate<"FeatureMT">;
 
 //===----------------------------------------------------------------------===//
 // Mips GPR size adjectives.
@@ -379,6 +383,10 @@ class ASE_MSA64 {
   list<Predicate> InsnPredicates = [HasMSA, HasMips64];
 }
 
+class ASE_MT {
+  list <Predicate> InsnPredicates = [HasMT];
+}
+
 // Class used for separating microMIPSr6 and microMIPS (r3) instruction.
 // It can be used only on instructions that doesn't inherit PredicateControl.
 class ISA_MICROMIPS_NOT_32R6_64R6 : PredicateControl {
@@ -387,6 +395,10 @@ class ISA_MICROMIPS_NOT_32R6_64R6 : PredicateControl {
 
 class ASE_NOT_DSP {
   list<Predicate> InsnPredicates = [NotDSP];
+}
+
+class MADD4 {
+  list<Predicate> AdditionalPredicates = [HasMadd4];
 }
 
 //===----------------------------------------------------------------------===//
@@ -1172,6 +1184,10 @@ def immZExt5Plus33 : PatLeaf<(imm), [{
   return isUInt<5>(N->getZExtValue() - 33);
 }]>;
 
+def immZExt5To31 : SDNodeXForm<imm, [{
+  return getImm(N, 31 - N->getZExtValue());
+}]>;
+
 // True if (N + 1) fits in 16-bit field.
 def immSExt16Plus1 : PatLeaf<(imm), [{
   return isInt<17>(N->getSExtValue()) && isInt<16>(N->getSExtValue() + 1);
@@ -1714,8 +1730,8 @@ let isReturn=1, isTerminator=1, isBarrier=1, hasCtrlDep=1, isCTI=1 in {
 }
 
 let Defs = [SP], Uses = [SP], hasSideEffects = 1 in {
-def ADJCALLSTACKDOWN : MipsPseudo<(outs), (ins i32imm:$amt),
-                                  [(callseq_start timm:$amt)]>;
+def ADJCALLSTACKDOWN : MipsPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
+                                  [(callseq_start timm:$amt1, timm:$amt2)]>;
 def ADJCALLSTACKUP   : MipsPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
                                   [(callseq_end timm:$amt1, timm:$amt2)]>;
 }
@@ -2322,15 +2338,17 @@ def MULOUMacro : MipsAsmPseudoInst<(outs), (ins GPR32Opnd:$rd, GPR32Opnd:$rs,
 //===----------------------------------------------------------------------===//
 
 multiclass OneOrTwoOperandMacroImmediateAlias<string Memnomic,
-                                         Instruction Opcode> {
+                                              Instruction Opcode,
+                                              RegisterOperand RO = GPR32Opnd,
+                                              Operand Imm = simm32_relaxed> {
   def : MipsInstAlias<!strconcat(Memnomic, " $rs, $rt, $imm"),
-                                (Opcode GPR32Opnd:$rs,
-                                        GPR32Opnd:$rt,
-                                        simm32_relaxed:$imm), 0>;
+                                (Opcode RO:$rs,
+                                        RO:$rt,
+                                        Imm:$imm), 0>;
   def : MipsInstAlias<!strconcat(Memnomic, " $rs, $imm"),
-                                (Opcode GPR32Opnd:$rs,
-                                        GPR32Opnd:$rs,
-                                        simm32_relaxed:$imm), 0>;
+                                (Opcode RO:$rs,
+                                        RO:$rs,
+                                        Imm:$imm), 0>;
 }
 
 def : MipsInstAlias<"move $dst, $src",
@@ -2384,15 +2402,15 @@ let AdditionalPredicates = [NotInMicroMips] in {
 
   defm : OneOrTwoOperandMacroImmediateAlias<"addu", ADDiu>;
 
-  defm : OneOrTwoOperandMacroImmediateAlias<"and", ANDi>;
+  defm : OneOrTwoOperandMacroImmediateAlias<"and", ANDi>, GPR_32;
 
-  defm : OneOrTwoOperandMacroImmediateAlias<"or", ORi>;
+  defm : OneOrTwoOperandMacroImmediateAlias<"or", ORi>, GPR_32;
 
-  defm : OneOrTwoOperandMacroImmediateAlias<"xor", XORi>;
+  defm : OneOrTwoOperandMacroImmediateAlias<"xor", XORi>, GPR_32;
 
-  defm : OneOrTwoOperandMacroImmediateAlias<"slt", SLTi>;
+  defm : OneOrTwoOperandMacroImmediateAlias<"slt", SLTi>, GPR_32;
 
-  defm : OneOrTwoOperandMacroImmediateAlias<"sltu", SLTiu>;
+  defm : OneOrTwoOperandMacroImmediateAlias<"sltu", SLTiu>, GPR_32;
 }
 def : MipsInstAlias<"mfc0 $rt, $rd", (MFC0 GPR32Opnd:$rt, COP0Opnd:$rd, 0), 0>;
 def : MipsInstAlias<"mtc0 $rt, $rd", (MTC0 COP0Opnd:$rd, GPR32Opnd:$rt, 0), 0>;
@@ -2500,11 +2518,12 @@ def JalTwoReg : MipsAsmPseudoInst<(outs GPR32Opnd:$rd), (ins GPR32Opnd:$rs),
 def JalOneReg : MipsAsmPseudoInst<(outs), (ins GPR32Opnd:$rs),
                       "jal\t$rs"> ;
 
-def NORImm : MipsAsmPseudoInst<
-                 (outs), (ins GPR32Opnd:$rs, GPR32Opnd:$rt, simm32_relaxed:$imm),
-                 "nor\t$rs, $rt, $imm">;
+class NORIMM_DESC_BASE<RegisterOperand RO, DAGOperand Imm> :
+   MipsAsmPseudoInst<(outs RO:$rs), (ins RO:$rt, Imm:$imm),
+                      "nor\t$rs, $rt, $imm">;
+def NORImm : NORIMM_DESC_BASE<GPR32Opnd, simm32_relaxed>, GPR_32;
 def : MipsInstAlias<"nor\t$rs, $imm", (NORImm GPR32Opnd:$rs, GPR32Opnd:$rs,
-                                              simm32_relaxed:$imm)>;
+                                              simm32_relaxed:$imm)>, GPR_32;
 
 let hasDelaySlot = 1, isCTI = 1 in {
 def BneImm : MipsAsmPseudoInst<(outs GPR32Opnd:$rt),
@@ -2904,6 +2923,10 @@ include "MipsMSAInstrInfo.td"
 // EVA
 include "MipsEVAInstrFormats.td"
 include "MipsEVAInstrInfo.td"
+
+// MT
+include "MipsMTInstrFormats.td"
+include "MipsMTInstrInfo.td"
 
 // Micromips
 include "MicroMipsInstrFormats.td"
