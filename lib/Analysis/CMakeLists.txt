@@ -21,6 +21,7 @@ add_llvm_library(LLVMAnalysis
   CostModel.cpp
   CodeMetrics.cpp
   ConstantFolding.cpp
+  DeclarationAnalysis.cpp
   Delinearization.cpp
   DemandedBits.cpp
   DependenceAnalysis.cpp
