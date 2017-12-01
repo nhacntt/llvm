@@ -10,6 +10,8 @@
 
 using namespace std;
 
+namespace llvm {
+
 struct Location {
 	string SourceFile;
 	unsigned LineNum;
@@ -86,8 +88,10 @@ struct FuncDecl : public Declaration {
 struct FuncDeclList{
 
 	vector<FuncDecl> List;
-	static llvm::ErrorOr<FuncDeclList> fromYAML(string FileName);
+	llvm::ErrorOr<FuncDeclList> fromYAML(string FileName);
 	void toYAML(llvm::raw_ostream &OS);
 };
+
+} //namespace
 
 #endif

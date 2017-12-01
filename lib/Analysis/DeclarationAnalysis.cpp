@@ -85,10 +85,8 @@ ErrorOr<FuncDeclList> FuncDeclList::fromYAML(std::string Filename) {
   	if (std::error_code ec = F.getError()) return ec;
 
 	FuncDeclList FL;
-  	outs()<<"Reading from YAML file: "<<Filename<<"\n";
 	llvm::StringRef Str = F.get()->getBuffer();
 	yaml::Input In(Str);
-  	errs()<< Str;
 	In >> FL.List;
 
 	if (std::error_code ec = In.error()) return ec;
