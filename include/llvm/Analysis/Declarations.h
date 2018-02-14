@@ -1,5 +1,5 @@
-#ifndef LLVM_ANALYSIS_DECLARATION_ANALYSIS_H
-#define LLVM_ANALYSIS_DECLARATION_ANALYSIS_H
+#ifndef LLVM_ANALYSIS_DECLARATIONS_H
+#define LLVM_ANALYSIS_DECLARATIONS_H
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/raw_ostream.h>
@@ -33,7 +33,7 @@ struct Location {
 struct Declaration {
 	Location Loc;
 	string Name;
-	llvm::SmallVector<string,4> Annotations;
+	SmallVector<string,4> Annotations;
 	
 	//Constructors
 	Declaration() = default;
@@ -64,13 +64,13 @@ struct ParamDecl : public Declaration {
 struct FuncDecl : public Declaration {
 	string MangledName;				//Mangled Name
 	string RType;					//Return Type
-	vector<ParamDecl> ParamVec;		//Function's parameters
+	std::vector<ParamDecl> ParamVec;		//Function's parameters
 	bool hasAnnotation;
 
 	//Constructor
 	FuncDecl()=default;
 	
-	FuncDecl(const Declaration& D, string MangledName, string RType, vector<ParamDecl> ParamVec):
+	FuncDecl(const Declaration& D, string MangledName, string RType, std::vector<ParamDecl> ParamVec):
 		Declaration(D),
 		MangledName(MangledName),
 		RType(RType),
@@ -88,10 +88,10 @@ struct FuncDecl : public Declaration {
 struct FuncDeclList{
 
 	vector<FuncDecl> List;
-	llvm::ErrorOr<FuncDeclList> fromYAML(string FileName);
-	void toYAML(llvm::raw_ostream &OS);
+	static ErrorOr<FuncDeclList> fromYAML(string FileName);
+	void toYAML(raw_ostream &OS);
 };
 
 } //namespace
 
-#endif
+#endif 

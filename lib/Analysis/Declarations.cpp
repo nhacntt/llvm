@@ -1,4 +1,4 @@
-#include "llvm/Analysis/DeclarationAnalysis.h"
+#include "llvm/Analysis/Declarations.h"
 #include <llvm/Support/YAMLTraits.h>
 #include <llvm/Support/MemoryBuffer.h>
 
